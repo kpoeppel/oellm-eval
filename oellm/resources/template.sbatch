@@ -135,12 +135,40 @@ do
         fi
     }}
 
+    # Same, but under accelerate so the suite can use every allocated GPU.
+    #
+    # This is DATA parallelism: accelerate replicates the model on each rank and lm-eval
+    # splits its request list across them, gathering before it scores. It does NOT shard
+    # the model, so one full copy must still fit on a single GPU -- which is the case for
+    # a 32B bf16 export (64 GB) on a 96 GB GH200. Use `parallelize=True` in --model_args
+    # instead when the model does not fit; that trades speed for capacity.
+    #
+    # Degrades to run_python at GPUS_PER_NODE=1, so single-GPU behaviour is byte-identical
+    # to before. Flags use underscores deliberately: accelerate >= 1.13 rejects the dashed
+    # spellings that MULTI_GPU_FLAG above still uses.
+    run_python_dp() {{
+        if [ "$GPUS_PER_NODE" -le 1 ]; then
+            run_python "$@"
+        elif [ -n "$VENV_PATH" ]; then
+            source "$VENV_PATH/bin/activate"
+            accelerate launch --num_processes $GPUS_PER_NODE --num_machines 1 --multi_gpu "$@"
+        else
+            singularity exec $SINGULARITY_ARGS \
+                $SINGULARITY_ENV_ARGS \
+                $SINGULARITY_HOME_ARG \
+                --bind $BIND_PATHS \
+                $EVAL_SIF_PATH \
+                env CUDA_VISIBLE_DEVICES=$GPU_DEVICES \
+                accelerate launch --num_processes $GPUS_PER_NODE --num_machines 1 --multi_gpu "$@"
+        fi
+    }}
+
     case "$suite_normalized" in
         lm_eval|lm-eval|lm-eval-harness)
             echo
             echo "----------------------------------------------------"
             echo "lm_eval Execution"
-            run_python -m lm_eval --model hf \
+            run_python_dp -m lm_eval --model hf \
                 --model_args pretrained="$model_path",trust_remote_code=True \
                 --tasks "$task_path" \
                 --num_fewshot "$n_shot" \
