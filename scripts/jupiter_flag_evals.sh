@@ -114,6 +114,22 @@ render)
     ARGS="--nv --cleanenv --containall --no-mount bind-paths,hostfs,cwd,home
           --env HF_HUB_CACHE=$HF_HOME/hub --env HF_DATASETS_OFFLINE=1 --env HF_ALLOW_CODE_EVAL=1
           --env HF_EVALUATE_OFFLINE=1 --env RAY_USAGE_STATS_ENABLED=0 --env OMP_NUM_THREADS=4"
+    # Patched HumanEval grader (vLLM image only): an overrunning sample counts as 'timed out'
+    # instead of aborting the whole HumanEval task, and the outer deadline is 3 s + 60 s (was
+    # + 10 s). Bound only while the image still ships the exact file the patch was made from.
+    HE_TARGET=/opt/evalchemy/eval/chat_benchmarks/HumanEval/human_eval/execution.py
+    HE_ORIG_MD5=d4dcb1a0e2a1dca44c77ec68bf871366
+    : "${HUMANEVAL_PATCH:=$REPO/containers/patches/humaneval_execution.py}"
+    VLLM_EXTRA=""
+    if [ -f "$HUMANEVAL_PATCH" ]; then
+        if [ "$(apptainer exec --cleanenv "$VLLM_SIF" md5sum "$HE_TARGET" 2>/dev/null | cut -c1-32)" = "$HE_ORIG_MD5" ]; then
+            VLLM_EXTRA="--bind $HUMANEVAL_PATCH:$HE_TARGET:ro"
+        else
+            echo "warning: $VLLM_SIF ships a different $HE_TARGET; HumanEval patch NOT applied" >&2
+        fi
+    else
+        echo "warning: $HUMANEVAL_PATCH not found; HumanEval runs with the unpatched grader" >&2
+    fi
     SLURM=$(printf '{"ACCOUNT":"%s","PARTITION":"booster","NODES":1,"CPUS_PER_TASK":288,"THREADS_PER_CORE":1,"SLURM_MEM":"400G","TIME":"%s"}' \
         "$ACCOUNT" "${TIME:-04:00:00}")
     for name in "$@"; do
@@ -129,8 +145,9 @@ render)
             out="$FLAG_WORK/runs/$name/$half"
             # One eval per array task (array size = min(max_array_len, evals)); its %N is set below.
             # GPUS_PER_NODE=4: vLLM overrides it with DP x TP; lighteval splits the model over all four.
+            extra=""; [ $half = vllm ] && extra="$VLLM_EXTRA"
             EVAL_BASE_DIR="$FLAG_WORK/runs" EVAL_OUTPUT_DIR="$out" QUEUE_LIMIT=1000 GPUS_PER_NODE=4 \
-            EVAL_CONTAINER_IMAGE="$sif" SINGULARITY_ARGS="$(echo $ARGS)" \
+            EVAL_CONTAINER_IMAGE="$sif" SINGULARITY_ARGS="$(echo $ARGS $extra)" \
                 oellm-eval schedule --models "$model" --task_groups "flag-evals-$half" "${opts[@]}" \
                     --log_samples true --confirm_run_unsafe_code true --max_array_len 1000 \
                     --slurm_template_var "$SLURM" --skip_checks true --dry_run true > /dev/null
