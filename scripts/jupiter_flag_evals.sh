@@ -5,6 +5,7 @@
 #   scripts/jupiter_flag_evals.sh views    <export dir> ...   # model views, hardlinked
 #   scripts/jupiter_flag_evals.sh prefetch                    # login node: every dataset into $FLAG_WORK/hf_home
 #   scripts/jupiter_flag_evals.sh render   <export name> ...  # both launchers; prints the sbatch commands
+#   scripts/jupiter_flag_evals.sh check                       # which oellm source the tool runs
 #   oellm-eval collect --results_dir $FLAG_WORK/runs/<export name> --output_csv <name>.csv
 #
 # Defaults are the e-sta-openeurollm setup; override ACCOUNT, FLAG_WORK (on the exports' filesystem,
@@ -26,15 +27,26 @@ TOKEN="${HF_TOKEN_PATH:-${HF_HOME:-$HOME/.cache/huggingface}/token}"   # where `
 export HF_HOME="$FLAG_WORK/hf_home" HF_DATASETS_CACHE="$FLAG_WORK/hf_home/datasets" NLTK_DATA=/opt/nltk_data
 unset LM_EVAL_INCLUDE_PATH HF_HUB_OFFLINE
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-TOOL_PY="$(dirname "$(command -v oellm-eval)")/python"
+# The oellm tool (task-group expansion, views, `oellm-eval schedule`) runs from THIS checkout on the
+# vLLM image's Python, which ships its dependencies (pandas, jsonargparse, datasets, ...): nothing is
+# installed on the cluster, and the suite always matches the checkout. OELLM_TOOL=installed uses an
+# `oellm-eval` on PATH instead (e.g. `uv tool install -e .`).
+: "${OELLM_TOOL:=image}"
+if [ "$OELLM_TOOL" = image ]; then
+    tool_py() { apptainer exec --env PYTHONPATH="$REPO" --env PYTHONNOUSERSITE=1 "$VLLM_SIF" python "$@"; }
+else
+    TOOL_PY="$(dirname "$(command -v oellm-eval)")/python"
+    tool_py() { "$TOOL_PY" "$@"; }
+fi
+oellm_eval() { tool_py -c 'from oellm.main import main; main()' "$@"; }
 VIEWS="$FLAG_WORK/views"
-MODE="${1:?usage: $0 views|prefetch|render ...}"; shift
-if [ "$MODE" != views ]; then
+MODE="${1:?usage: $0 views|prefetch|render|check ...}"; shift
+if [ "$MODE" != views ] || [ "$OELLM_TOOL" = image ]; then
     for f in "$VLLM_SIF" "$LIGHTEVAL_SIF"; do [ -f "$f" ] || { echo "missing image $f" >&2; exit 1; }; done
 fi
 
 expand() {  # <super group> <suite>: task<TAB>n_shot
-    "$TOOL_PY" - "$1" "$2" <<'EOF'
+    tool_py - "$1" "$2" <<'EOF'
 import sys
 from oellm.task_groups import _expand_task_groups
 for r in _expand_task_groups([sys.argv[1]]):
@@ -51,7 +63,7 @@ views)
             grep -q "\"source\": \"$src\"" "$VIEWS/identity/$name/prompt-view-manifest.json" \
                 || { echo "$VIEWS/identity/$name is a view of another export" >&2; exit 1; }
         else
-            "$TOOL_PY" "$REPO/containers/prepare_base_model_view.py" \
+            tool_py "$REPO/containers/prepare_base_model_view.py" \
                 --source "$src" --out "$VIEWS/identity/$name" --template identity
         fi
         dst="$VIEWS/plain/$name"
@@ -60,7 +72,7 @@ views)
     done
     ;;
 prefetch)
-    TASKS_DIR=$("$TOOL_PY" -c "from importlib.resources import files; print(files('oellm.resources') / 'custom_lm_eval_tasks')")
+    TASKS_DIR=$(tool_py -c "from importlib.resources import files; print(files('oellm.resources') / 'custom_lm_eval_tasks')")
     mkdir -p "$HF_HOME"
     ENVS=(--cleanenv --env HF_HOME="$HF_HOME" --env HF_HUB_CACHE="$HF_HOME/hub" --env HF_ALLOW_CODE_EVAL=1
           --env HF_DATASETS_OFFLINE=0 --env HF_HUB_OFFLINE=0 --env HF_TOKEN_PATH="$TOKEN")
@@ -149,7 +161,7 @@ render)
             extra=""; [ $half = vllm ] && extra="$VLLM_EXTRA"
             EVAL_BASE_DIR="$FLAG_WORK/runs" EVAL_OUTPUT_DIR="$out" QUEUE_LIMIT=1000 GPUS_PER_NODE=4 \
             EVAL_CONTAINER_IMAGE="$sif" SINGULARITY_ARGS="$(echo $ARGS $extra)" \
-                oellm-eval schedule --models "$model" --task_groups "flag-evals-$half" "${opts[@]}" \
+                oellm_eval schedule --models "$model" --task_groups "flag-evals-$half" "${opts[@]}" \
                     --log_samples true --confirm_run_unsafe_code true --max_array_len 1000 \
                     --slurm_template_var "$SLURM" --skip_checks true --dry_run true > /dev/null
             script=$(ls -t "$out"/*/submit_evals.sbatch | head -1)
@@ -158,6 +170,10 @@ render)
             echo "sbatch $script   # $(grep -m1 '^#SBATCH --array' "$script")"
         done
     done
+    ;;
+check)
+    # Where the oellm package in use comes from (callers verify it is this checkout).
+    tool_py -c 'import oellm, os; print(os.path.dirname(os.path.realpath(oellm.__file__)))'
     ;;
 *) echo "unknown mode: $MODE" >&2; exit 2 ;;
 esac
