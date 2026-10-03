@@ -8,7 +8,8 @@
 #   oellm-eval collect --results_dir $FLAG_WORK/runs/<export name> --output_csv <name>.csv
 #
 # Defaults are the e-sta-openeurollm setup; override ACCOUNT, FLAG_WORK (on the exports' filesystem,
-# for the hardlinks), VLLM_SIF, LIGHTEVAL_SIF (built from containers/lighteval-jupiter.def), CONCURRENCY, TIME.
+# for the hardlinks), VLLM_SIF, LIGHTEVAL_SIF (built from containers/lighteval-jupiter.def), CONCURRENCY, TIME,
+# HALVES (render only "vllm" or "lighteval"; default both), HUMANEVAL_PATCH.
 # Views: identity chat template for vLLM (Evalchemy applies it, lm-eval does not); none for lighteval,
 # which applies any template it finds and caches samples in the model directory.
 # Prefetch: compute nodes are offline, so each harness fetches its datasets inside its own image
@@ -133,7 +134,7 @@ render)
     SLURM=$(printf '{"ACCOUNT":"%s","PARTITION":"booster","NODES":1,"CPUS_PER_TASK":288,"THREADS_PER_CORE":1,"SLURM_MEM":"400G","TIME":"%s"}' \
         "$ACCOUNT" "${TIME:-04:00:00}")
     for name in "$@"; do
-        for half in vllm lighteval; do
+        for half in ${HALVES:-vllm lighteval}; do
             if [ $half = vllm ]; then
                 sif=$VLLM_SIF; model=$VIEWS/identity/$name
                 opts=(--model_backend vllm --data_parallel_size 4 --data_parallel_backend mp
