@@ -33,12 +33,28 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # `oellm-eval` on PATH instead (e.g. `uv tool install -e .`).
 : "${OELLM_TOOL:=image}"
 if [ "$OELLM_TOOL" = image ]; then
-    tool_py() { apptainer exec --env PYTHONPATH="$REPO" --env PYTHONNOUSERSITE=1 "$VLLM_SIF" python "$@"; }
+    # apptainer never passes host SINGULARITY_*/APPTAINER_* variables into a container, but the
+    # launcher template needs SINGULARITY_ARGS (without it, it silently renders the cluster
+    # default --contain: no --cleanenv, no HumanEval patch bind). Hand it over under another name,
+    # via an env file because `--env` splits values at commas.
+    tool_py() {
+        local envf rc=0; envf=$(mktemp)
+        [ -z "${SINGULARITY_ARGS+set}" ] || printf 'OELLM_SINGULARITY_ARGS=%q\n' "$SINGULARITY_ARGS" > "$envf"
+        apptainer exec --env PYTHONPATH="$REPO" --env PYTHONNOUSERSITE=1 --env-file "$envf" "$VLLM_SIF" python "$@" || rc=$?
+        rm -f "$envf"; return $rc
+    }
 else
     TOOL_PY="$(dirname "$(command -v oellm-eval)")/python"
     tool_py() { "$TOOL_PY" "$@"; }
 fi
-oellm_eval() { tool_py -c 'from oellm.main import main; main()' "$@"; }
+oellm_eval() {
+    tool_py -c 'import os
+args = os.environ.pop("OELLM_SINGULARITY_ARGS", None)
+if args is not None:
+    os.environ["SINGULARITY_ARGS"] = args
+from oellm.main import main
+main()' "$@"
+}
 VIEWS="$FLAG_WORK/views"
 MODE="${1:?usage: $0 views|prefetch|render|check ...}"; shift
 if [ "$MODE" != views ] || [ "$OELLM_TOOL" = image ]; then
