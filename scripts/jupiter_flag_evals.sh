@@ -39,7 +39,10 @@ if [ "$OELLM_TOOL" = image ]; then
     # via an env file because `--env` splits values at commas.
     tool_py() {
         local envf rc=0; envf=$(mktemp)
-        [ -z "${SINGULARITY_ARGS+set}" ] || printf 'OELLM_SINGULARITY_ARGS=%q\n' "$SINGULARITY_ARGS" > "$envf"
+        if [ -n "${SINGULARITY_ARGS+set}" ]; then    # single-quoted: apptainer reads env files verbatim
+            [[ "$SINGULARITY_ARGS" != *"'"* ]] || { echo "error: SINGULARITY_ARGS must not contain single quotes" >&2; rm -f "$envf"; return 1; }
+            printf "OELLM_SINGULARITY_ARGS='%s'\n" "$SINGULARITY_ARGS" > "$envf"
+        fi
         apptainer exec --env PYTHONPATH="$REPO" --env PYTHONNOUSERSITE=1 --env-file "$envf" "$VLLM_SIF" python "$@" || rc=$?
         rm -f "$envf"; return $rc
     }
