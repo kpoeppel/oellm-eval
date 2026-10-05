@@ -6,6 +6,8 @@
 #   scripts/jupiter_flag_evals.sh prefetch                    # login node: every dataset into $FLAG_WORK/hf_home
 #   scripts/jupiter_flag_evals.sh render   <export name> ...  # both launchers; prints the sbatch commands
 #   scripts/jupiter_flag_evals.sh check                       # which oellm source the tool runs
+#   scripts/jupiter_flag_evals.sh tasks    <out.yaml>         # eval rows per half, for oellm-autoexp
+#   scripts/jupiter_flag_evals.sh run-one  <name> <half> <row> <task>  # one row, in this allocation
 #   oellm-eval collect --results_dir $FLAG_WORK/runs/<export name> --output_csv <name>.csv
 #
 # Defaults are the e-sta-openeurollm setup; override ACCOUNT, FLAG_WORK (on the exports' filesystem,
@@ -59,7 +61,7 @@ from oellm.main import main
 main()' "$@"
 }
 VIEWS="$FLAG_WORK/views"
-MODE="${1:?usage: $0 views|prefetch|render|check ...}"; shift
+MODE="${1:?usage: $0 views|prefetch|render|tasks|run-one|check ...}"; shift
 if [ "$MODE" != views ] || [ "$OELLM_TOOL" = image ]; then
     for f in "$VLLM_SIF" "$LIGHTEVAL_SIF"; do [ -f "$f" ] || { echo "missing image $f" >&2; exit 1; }; done
 fi
@@ -72,6 +74,50 @@ for r in _expand_task_groups([sys.argv[1]]):
     if r.suite == sys.argv[2]:
         print(f"{r.task}\t{r.n_shot}")
 EOF
+}
+
+render_setup() {  # sets ARGS, VLLM_EXTRA and SLURM for render_half
+    # --containall with an explicit environment; the launcher binds the model, HF_HOME and the task dir.
+    ARGS="--nv --cleanenv --containall --no-mount bind-paths,hostfs,cwd,home
+          --env HF_HUB_CACHE=$HF_HOME/hub --env HF_DATASETS_OFFLINE=1 --env HF_ALLOW_CODE_EVAL=1
+          --env HF_EVALUATE_OFFLINE=1 --env RAY_USAGE_STATS_ENABLED=0 --env OMP_NUM_THREADS=4"
+    # Patched HumanEval grader (vLLM image only): an overrunning sample counts as 'timed out'
+    # instead of aborting the whole HumanEval task, and the outer deadline is 3 s + 60 s (was
+    # + 10 s). Bound only while the image still ships the exact file the patch was made from.
+    HE_TARGET=/opt/evalchemy/eval/chat_benchmarks/HumanEval/human_eval/execution.py
+    HE_ORIG_MD5=d4dcb1a0e2a1dca44c77ec68bf871366
+    : "${HUMANEVAL_PATCH:=$REPO/containers/patches/humaneval_execution.py}"
+    VLLM_EXTRA=""
+    if [ -f "$HUMANEVAL_PATCH" ]; then
+        if [ "$(apptainer exec --cleanenv "$VLLM_SIF" md5sum "$HE_TARGET" 2>/dev/null | cut -c1-32)" = "$HE_ORIG_MD5" ]; then
+            VLLM_EXTRA="--bind $HUMANEVAL_PATCH:$HE_TARGET:ro"
+        else
+            echo "warning: $VLLM_SIF ships a different $HE_TARGET; HumanEval patch NOT applied" >&2
+        fi
+    else
+        echo "warning: $HUMANEVAL_PATCH not found; HumanEval runs with the unpatched grader" >&2
+    fi
+    SLURM=$(printf '{"ACCOUNT":"%s","PARTITION":"booster","NODES":1,"CPUS_PER_TASK":288,"THREADS_PER_CORE":1,"SLURM_MEM":"400G","TIME":"%s"}' \
+        "$ACCOUNT" "${TIME:-04:00:00}")
+}
+
+render_half() {  # <half> <model dir> <output dir>: renders one launcher, prints its path
+    local half=$1 model=$2 out=$3 sif extra="" opts=()
+    if [ "$half" = vllm ]; then
+        sif=$VLLM_SIF; extra="$VLLM_EXTRA"
+        opts=(--model_backend vllm --data_parallel_size 4 --data_parallel_backend mp
+              --model_args dtype=bfloat16,gpu_memory_utilization=0.9,max_num_seqs=32)
+    else
+        sif=$LIGHTEVAL_SIF
+    fi
+    # One eval per array task (array size = min(max_array_len, evals)).
+    # GPUS_PER_NODE=4: vLLM overrides it with DP x TP; lighteval splits the model over all four.
+    EVAL_BASE_DIR="$FLAG_WORK/runs" EVAL_OUTPUT_DIR="$out" QUEUE_LIMIT=1000 GPUS_PER_NODE=4 \
+    EVAL_CONTAINER_IMAGE="$sif" SINGULARITY_ARGS="$(echo $ARGS $extra)" \
+        oellm_eval schedule --models "$model" --task_groups "flag-evals-$half" "${opts[@]}" \
+            --log_samples true --confirm_run_unsafe_code true --max_array_len 1000 \
+            --slurm_template_var "$SLURM" --skip_checks true --dry_run true > /dev/null
+    ls -t "$out"/*/submit_evals.sbatch | head -1
 }
 
 case "$MODE" in
@@ -142,53 +188,76 @@ sys.exit(1 if bad else 0)
 EOF
     ;;
 render)
-    # --containall with an explicit environment; the launcher binds the model, HF_HOME and the task dir.
-    ARGS="--nv --cleanenv --containall --no-mount bind-paths,hostfs,cwd,home
-          --env HF_HUB_CACHE=$HF_HOME/hub --env HF_DATASETS_OFFLINE=1 --env HF_ALLOW_CODE_EVAL=1
-          --env HF_EVALUATE_OFFLINE=1 --env RAY_USAGE_STATS_ENABLED=0 --env OMP_NUM_THREADS=4"
-    # Patched HumanEval grader (vLLM image only): an overrunning sample counts as 'timed out'
-    # instead of aborting the whole HumanEval task, and the outer deadline is 3 s + 60 s (was
-    # + 10 s). Bound only while the image still ships the exact file the patch was made from.
-    HE_TARGET=/opt/evalchemy/eval/chat_benchmarks/HumanEval/human_eval/execution.py
-    HE_ORIG_MD5=d4dcb1a0e2a1dca44c77ec68bf871366
-    : "${HUMANEVAL_PATCH:=$REPO/containers/patches/humaneval_execution.py}"
-    VLLM_EXTRA=""
-    if [ -f "$HUMANEVAL_PATCH" ]; then
-        if [ "$(apptainer exec --cleanenv "$VLLM_SIF" md5sum "$HE_TARGET" 2>/dev/null | cut -c1-32)" = "$HE_ORIG_MD5" ]; then
-            VLLM_EXTRA="--bind $HUMANEVAL_PATCH:$HE_TARGET:ro"
-        else
-            echo "warning: $VLLM_SIF ships a different $HE_TARGET; HumanEval patch NOT applied" >&2
-        fi
-    else
-        echo "warning: $HUMANEVAL_PATCH not found; HumanEval runs with the unpatched grader" >&2
-    fi
-    SLURM=$(printf '{"ACCOUNT":"%s","PARTITION":"booster","NODES":1,"CPUS_PER_TASK":288,"THREADS_PER_CORE":1,"SLURM_MEM":"400G","TIME":"%s"}' \
-        "$ACCOUNT" "${TIME:-04:00:00}")
+    render_setup
     for name in "$@"; do
         for half in ${HALVES:-vllm lighteval}; do
-            if [ $half = vllm ]; then
-                sif=$VLLM_SIF; model=$VIEWS/identity/$name
-                opts=(--model_backend vllm --data_parallel_size 4 --data_parallel_backend mp
-                      --model_args dtype=bfloat16,gpu_memory_utilization=0.9,max_num_seqs=32)
-            else
-                sif=$LIGHTEVAL_SIF; model=$VIEWS/plain/$name; opts=()
-            fi
+            if [ $half = vllm ]; then model=$VIEWS/identity/$name; else model=$VIEWS/plain/$name; fi
             [ -f "$model/config.json" ] || { echo "no view $model; run: $0 views <export dir>" >&2; exit 1; }
-            out="$FLAG_WORK/runs/$name/$half"
-            # One eval per array task (array size = min(max_array_len, evals)); its %N is set below.
-            # GPUS_PER_NODE=4: vLLM overrides it with DP x TP; lighteval splits the model over all four.
-            extra=""; [ $half = vllm ] && extra="$VLLM_EXTRA"
-            EVAL_BASE_DIR="$FLAG_WORK/runs" EVAL_OUTPUT_DIR="$out" QUEUE_LIMIT=1000 GPUS_PER_NODE=4 \
-            EVAL_CONTAINER_IMAGE="$sif" SINGULARITY_ARGS="$(echo $ARGS $extra)" \
-                oellm_eval schedule --models "$model" --task_groups "flag-evals-$half" "${opts[@]}" \
-                    --log_samples true --confirm_run_unsafe_code true --max_array_len 1000 \
-                    --slurm_template_var "$SLURM" --skip_checks true --dry_run true > /dev/null
-            script=$(ls -t "$out"/*/submit_evals.sbatch | head -1)
+            script=$(render_half $half "$model" "$FLAG_WORK/runs/$name/$half")
             sed -i -E "s/^(#SBATCH --array=[0-9]+-[0-9]+)%[0-9]+$/\1%${CONCURRENCY:-20}/" "$script"
             grep -q "^#SBATCH --array=.*%${CONCURRENCY:-20}$" "$script" || { echo "throttle failed: $script" >&2; exit 1; }
             echo "sbatch $script   # $(grep -m1 '^#SBATCH --array' "$script")"
         done
     done
+    ;;
+tasks)
+    # The suite's evals per half, in the launchers' row order, as a Hydra config for
+    # oellm-autoexp (one array task per row; `run-one` executes a row). Model-independent:
+    # rendered once per oellm-eval revision against a placeholder model.
+    out=${1:?usage: $0 tasks <out.yaml>}
+    render_setup
+    tmp=$(mktemp -d "$FLAG_WORK/tasks.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
+    csvs=()
+    for half in vllm lighteval; do
+        script=$(render_half $half "/oellm-flag-tasks-placeholder/$half" "$tmp/$half")
+        csvs+=("$half=$(dirname "$script")/jobs.csv")
+    done
+    rev=$(git -C "$REPO" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)
+    [ -z "$(git -C "$REPO" status --porcelain --untracked-files=no 2>/dev/null)" ] || rev="$rev-dirty"
+    python3 - "$rev" "${csvs[@]}" > "$out.tmp" <<'PY'
+import csv, json, sys
+rev, halves = sys.argv[1], sys.argv[2:]
+items = []
+for spec in halves:
+    half, path = spec.split("=", 1)
+    with open(path, newline="") as fh:
+        for row, r in enumerate(csv.DictReader(fh)):
+            items.append({"name": f"{half}/{r['task_path']}/{int(r['n_shot'])}", "half": half,
+                          "row": row, "task": r["task_path"], "n_shot": int(r["n_shot"]),
+                          "suite": r["eval_suite"]})
+names = [i["name"] for i in items]
+dupes = sorted({n for n in names if names.count(n) > 1})
+if dupes:
+    sys.exit(f"duplicate eval names: {dupes}")
+print("# GENERATED by submodules/oellm-eval/scripts/jupiter_flag_evals.sh tasks -- do not edit.")
+print("# One item per eval. name = half/task/n_shot (stable: select subsets by it); row = the")
+print("# launcher row `run-one <export> <half> <row> <task>` executes (order of this revision).")
+print(f"oellm_eval_rev: {json.dumps(rev)}")
+print(f"count: {len(items)}")
+print("tasks:")
+for i in items:
+    print("  - {" + ", ".join(f"{k}: {json.dumps(v)}" for k, v in i.items()) + "}")
+PY
+    mv "$out.tmp" "$out"
+    echo "wrote $out (oellm-eval $rev)"
+    ;;
+run-one)
+    # One row of an export's rendered launcher, in the CURRENT allocation (an oellm-autoexp
+    # array task). The launcher body is the per-eval logic (container, binds, harness, results
+    # dir); its #SBATCH header is inert here. TASK must match the row, so a task list from
+    # another oellm-eval revision cannot silently run a different eval. A row that already
+    # succeeded is skipped, so resubmitting a whole stage only reruns what is missing.
+    name=${1:?usage: $0 run-one <name> <half> <row> <task>} half=${2:?half} row=${3:?row} task=${4:?task}
+    script=$(ls -t "$FLAG_WORK/runs/$name/$half"/*/submit_evals.sbatch 2>/dev/null | head -1)
+    [ -n "$script" ] || { echo "no rendered $half launcher for $name; run: $0 render $name" >&2; exit 1; }
+    # split like the launcher's own `IFS=, read` (header = line 1)
+    got=$(awk -F, -v n=$((row + 2)) 'NR == n { print $2 }' "$(dirname "$script")/jobs.csv")
+    [ "$got" = "$task" ] || { echo "row $row of $script is '$got', expected '$task'" >&2; exit 1; }
+    done_dir="$FLAG_WORK/runs/$name/$half/done"; mkdir -p "$done_dir"
+    if [ -f "$done_dir/$row.ok" ]; then echo "row $row ($task) already succeeded: $done_dir/$row.ok"; exit 0; fi
+    echo "run-one: $name $half row $row = $task  ($script)"
+    SLURM_ARRAY_TASK_ID=$row bash "$script"
+    printf '%s %s %s\n' "$(date -Is)" "${SLURM_JOB_ID:-local}" "$task" > "$done_dir/$row.ok"
     ;;
 check)
     # Where the oellm package in use comes from (callers verify it is this checkout).
