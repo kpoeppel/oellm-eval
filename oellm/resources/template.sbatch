@@ -133,13 +133,18 @@ do
     SINGULARITY_ENV_ARGS=""
     JOB_TMP=""
     if [[ "$SINGULARITY_ARGS" == *"--contain"* ]]; then
-        JOB_HOME="$EVAL_BASE_DIR/$USER/container_home/$SLURM_JOB_ID"
-        mkdir -p "$JOB_HOME"
-        SINGULARITY_HOME_ARG="--home $JOB_HOME"
         # Contained /tmp may otherwise be a tiny session tmpfs (16 MiB on JUPITER).
         # Mount a private host directory at a short container path for multiprocessing sockets.
         JOB_TMP=$(mktemp -d "${{OELLM_EVAL_TMP_ROOT:-/tmp}}/oellm-eval-${{SLURM_JOB_ID:-local}}.XXXXXX")
         trap 'rm -rf -- "$JOB_TMP"' EXIT ERR
+        # The home holds only compiler/autotune caches (triton, vLLM torch.compile, flashinfer,
+        # numba, tilelang, CUDA ComputeCache), rebuilt by every task anyway: node-local, inside
+        # JOB_TMP. On the shared filesystem it left a directory tree per task behind (177 GB,
+        # 924k files). Mounted at /tmp/home, which is the same directory whether or not the
+        # /tmp bind below shadows it -- a home at its host path under /tmp is hidden by it.
+        JOB_HOME="$JOB_TMP/home"
+        mkdir -p "$JOB_HOME"
+        SINGULARITY_HOME_ARG="--home $JOB_HOME:/tmp/home"
         BIND_PATHS="$BIND_PATHS,$JOB_TMP:/tmp,$JOB_TMP:/var/tmp"
         echo "Evaluation temporary storage: $JOB_TMP -> /tmp and /var/tmp"
         df -Pk "$JOB_TMP"
