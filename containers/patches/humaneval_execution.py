@@ -7,6 +7,7 @@ import platform
 import signal
 import random
 import subprocess
+import sys  # PATCH(oellm): the outer-deadline / dead-worker messages below write to sys.stderr
 import tempfile
 import gzip
 import json
