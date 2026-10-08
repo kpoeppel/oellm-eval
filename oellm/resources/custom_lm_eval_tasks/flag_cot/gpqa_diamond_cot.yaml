@@ -1,0 +1,32 @@
+# GPQA Diamond, forced reasoning: Evalchemy's prompt ("Return your final response within \boxed{}
+# and only include the letter choice ...", options shuffled with random.Random(42) in dataset
+# order) followed by " <think>\n"; answer = Evalchemy's get_multiple_choice_answer (last A-D).
+#   temperature 0.6, top_p 0.95  DeepSeek-R1 (arXiv:2501.12948, §3); Yue et al. 2025
+#                                (arXiv:2504.13837, §3)
+#   n 8, pass@1    DeepSeek-R1 §3: k responses "typically between 4 and 64, depending on the test
+#                  set size" (198 questions here). No pass@k > 1: on a 4-way choice it is inflated
+#                  by guessing (pass@8 of a random guesser is 0.90).
+task: gpqa_diamond_cot
+output_type: generate_until
+test_split: test
+custom_dataset: !function utils.load_gpqa_diamond
+doc_to_text: !function utils.gpqa_doc_to_text
+doc_to_target: gold
+process_results: !function utils.gpqa_process_results
+repeats: 8
+filter_list:
+  - name: all
+    filter:
+      - function: take_first_k
+        k: 8
+generation_kwargs:
+  until: []
+  do_sample: true
+  temperature: 0.6
+  top_p: 0.95
+  max_gen_toks: 4096  # = the rest of the context after each prompt (utils.py)
+metric_list:
+  - {metric: "pass@1", aggregation: mean, higher_is_better: true}
+  - {metric: think_closed, aggregation: mean, higher_is_better: true}
+metadata:
+  version: 1.0

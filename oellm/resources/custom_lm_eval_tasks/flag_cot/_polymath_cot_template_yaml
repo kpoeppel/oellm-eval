@@ -1,0 +1,37 @@
+# PolyMath, forced reasoning: the polymath task's prompt ("Solve the following math problem step
+# by step. Put your final answer inside \boxed{}. Problem: ... Solution:") followed by
+# " <think>\n"; judged by the vendored PolyMath math_equal on the LAST \boxed{} span (the release
+# task takes the first, which inside a derivation can be an intermediate result).
+#   temperature 0.6, top_p 0.95  DeepSeek-R1 (arXiv:2501.12948, §3); Yue et al. 2025
+#                                (arXiv:2504.13837, §3)
+#   n 4, pass@4    Olmo 3 (arXiv:2512.13961, App. A.4, Table 46: Minerva MATH "1, 4 (4)");
+#                  125 problems per language and tier, 24 tasks.
+# The release task stops at "Problem:" (the model starts a new problem after its answer); kept.
+dataset_path: Qwen/PolyMath
+output_type: generate_until
+training_split: null
+validation_split: null
+doc_to_text: !function utils.polymath_doc_to_text
+doc_to_target: !function utils.polymath_doc_to_target
+process_results: !function utils.polymath_process_results
+repeats: 4
+filter_list:
+  - name: all
+    filter:
+      - function: take_first_k
+        k: 4
+generation_kwargs:
+  until:
+    - "Problem:"
+  do_sample: true
+  temperature: 0.6
+  top_p: 0.95
+  max_gen_toks: 4096  # = the rest of the context after each prompt (utils.py)
+metric_list:
+  - {metric: "pass@1", aggregation: mean, higher_is_better: true}
+  - {metric: "pass@4", aggregation: mean, higher_is_better: true}
+  - {metric: think_closed, aggregation: mean, higher_is_better: true}
+metadata:
+  version: 1.0
+dataset_kwargs:
+  trust_remote_code: true

@@ -1,0 +1,26 @@
+# Competition math, forced reasoning (`_cot`): the Evalchemy prompt ("Problem: ...\nMark your
+# solution with \boxed\nAnswer:") followed by " <think>\n", sampled; see utils.py.
+#
+# Sampling, from the reasoning-eval protocol for base AND RL models:
+#   temperature 0.6, top_p 0.95  DeepSeek-R1 (arXiv:2501.12948, §3 evaluation setup: "sampling
+#                                temperature of 0.6 and a top-p value of 0.95 to generate k
+#                                responses (typically between 4 and 64, depending on the test set
+#                                size) for each question"; pass@1 = mean over the k);
+#                                Yue et al. 2025 (arXiv:2504.13837, §3: same values for base and
+#                                RLVR models); also the setting of our math_cot measurements
+#                                (oellm-autoexp docs/anneal-math, 2026-10-07).
+# Budget: no stop string (EOS ends a sample); max_gen_toks 4096 = the rest of the 4096-token
+# context after each prompt (utils.py: the backend shrinks the budget instead of cutting the prompt).
+output_type: generate_until
+test_split: test
+custom_dataset: !function utils.load_math
+doc_to_text: !function utils.math_doc_to_text
+doc_to_target: answer
+process_results: !function utils.math_process_results
+generation_kwargs:
+  until: []
+  do_sample: true
+  temperature: 0.6
+  top_p: 0.95
+metadata:
+  version: 1.0

@@ -1,0 +1,4 @@
+include: _polymath_cot_template_yaml
+task: polymath_pt_high_cot
+dataset_name: pt
+test_split: high

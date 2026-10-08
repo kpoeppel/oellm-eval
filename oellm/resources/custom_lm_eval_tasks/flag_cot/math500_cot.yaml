@@ -1,0 +1,25 @@
+include: _math_cot_template_yaml
+task: math500_cot
+dataset_kwargs:
+  source: MATH500
+# n = 4 samples per problem (500 problems), reported as pass@1 / pass@4:
+#   n 4, pass@4    Olmo 3 (arXiv:2512.13961, App. A.4, Table 46: Minerva MATH "1, 4 (4)").
+#   Olmo 3 runs MATH 500 itself at n = 32 with max 1024 tokens; a forced derivation here takes up
+#   to ~3.8k tokens, so n = 32 would cost 8x the ~25 min per checkpoint measured with n = 4
+#   (math_cot, 2026-10-07). n = 4 keeps the 95% CI over problems at about +-0.03.
+repeats: 4
+filter_list:
+  - name: all
+    filter:
+      - function: take_first_k
+        k: 4
+generation_kwargs:
+  until: []
+  do_sample: true
+  temperature: 0.6
+  top_p: 0.95
+  max_gen_toks: 4096  # = the rest of the context after each prompt (utils.py)
+metric_list:
+  - {metric: "pass@1", aggregation: mean, higher_is_better: true}
+  - {metric: "pass@4", aggregation: mean, higher_is_better: true}
+  - {metric: think_closed, aggregation: mean, higher_is_better: true}

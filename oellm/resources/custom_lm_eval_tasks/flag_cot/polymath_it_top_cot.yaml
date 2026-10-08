@@ -1,0 +1,4 @@
+include: _polymath_cot_template_yaml
+task: polymath_it_top_cot
+dataset_name: it
+test_split: top

@@ -1,0 +1,38 @@
+# MBPP as a continuation (`_cont`), sampled: lm-eval's mbpp prompt and its 3 fixed examples ("You
+# are an expert Python programmer ... [BEGIN]\n<code>\n[DONE]"), the model writes the code after
+# [BEGIN] and stops at [DONE]; run against the 3 asserts with HF code_eval. The release task
+# (mbpp, 3-shot, greedy pass@1) stays in the suite.
+#   3-shot, temperature 0.6, top_p 0.6, max 512 tokens, n 32, pass@1 / pass@16
+#                      Olmo 3 (arXiv:2512.13961, App. A.4, Table 46: MBPP "3 ... 0.6 0.6 512
+#                      1, 16 (32)"); pass@k = unbiased estimator of Chen et al. 2021 (Eq. 1).
+task: mbpp_cont
+dataset_path: google-research-datasets/mbpp
+dataset_name: full
+unsafe_code: true
+output_type: generate_until
+test_split: test
+doc_to_text: "You are an expert Python programmer, and here is your task: {{text}} Your code should pass these tests:\n\n{{test_list[0]}}\n{{test_list[1]}}\n{{test_list[2]}}\n[BEGIN]\n"
+doc_to_target: "{% if is_fewshot is defined %}{{code}}\n[DONE]{% else %}{{test_list[0]}}\n{{test_list[1]}}\n{{test_list[2]}}{% endif %}"
+target_delimiter: ""
+num_fewshot: 3
+fewshot_config:
+  sampler: first_n
+  samples: !function utils.mbpp_fewshot_samples
+process_results: !function utils.mbpp_process_results
+repeats: 32
+filter_list:
+  - name: all
+    filter:
+      - function: take_first_k
+        k: 32
+generation_kwargs:
+  until: ["[DONE]"]
+  do_sample: true
+  temperature: 0.6
+  top_p: 0.6
+  max_gen_toks: 512
+metric_list:
+  - {metric: "pass@1", aggregation: mean, higher_is_better: true}
+  - {metric: "pass@16", aggregation: mean, higher_is_better: true}
+metadata:
+  version: 1.0

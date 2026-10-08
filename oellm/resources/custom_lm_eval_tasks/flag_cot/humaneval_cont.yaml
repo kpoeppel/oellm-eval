@@ -1,0 +1,35 @@
+# HumanEval as a continuation (`_cont`), the base-model protocol: the prompt is the function stub
+# (signature + docstring) of Evalchemy's humaneval-python.jsonl, the model continues the body and
+# stops at the next top-level statement; program = stub + continuation, run against the task's test
+# code (which ends in check(<entry point>)) with HF code_eval, as lm-eval's own humaneval task.
+#   0-shot completion  Codex (Chen et al. 2021, arXiv:2107.03374); Qwen2.5/Qwen3 base reports
+#                      (EvalPlus 0-shot). Stops: lm-eval's humaneval task.
+#   temperature 0.6, top_p 0.6, max 512 tokens, n 32, pass@1 / pass@16
+#                      Olmo 3 (arXiv:2512.13961, App. A.4, Table 46: HumanEval "0.6 0.6 512
+#                      1, 16 (32)"; their prompt is 3-shot); pass@k = unbiased estimator of
+#                      Chen et al. 2021, Eq. 1.
+task: humaneval_cont
+output_type: generate_until
+test_split: test
+unsafe_code: true
+custom_dataset: !function utils.load_humaneval
+doc_to_text: !function utils.humaneval_doc_to_text
+doc_to_target: test
+process_results: !function utils.humaneval_process_results
+repeats: 32
+filter_list:
+  - name: all
+    filter:
+      - function: take_first_k
+        k: 32
+generation_kwargs:
+  until: ["\nclass", "\ndef", "\n#", "\nif", "\nprint"]
+  do_sample: true
+  temperature: 0.6
+  top_p: 0.6
+  max_gen_toks: 512
+metric_list:
+  - {metric: "pass@1", aggregation: mean, higher_is_better: true}
+  - {metric: "pass@16", aggregation: mean, higher_is_better: true}
+metadata:
+  version: 1.0

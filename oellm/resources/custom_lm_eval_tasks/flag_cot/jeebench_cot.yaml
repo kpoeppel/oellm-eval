@@ -1,0 +1,34 @@
+# JEEBench, forced reasoning: Evalchemy's prompt (type-specific instruction + "Problem: ...",
+# "... with \boxed\nAnswer:") followed by " <think>\n"; scored with Evalchemy's compute_score
+# (partial credit 0.25 per correct letter on multi-answer questions).
+#   temperature 0.6, top_p 0.95  DeepSeek-R1 (arXiv:2501.12948, §3); Yue et al. 2025
+#                                (arXiv:2504.13837, §3) -- see _math_cot_template_yaml
+#   n 4, pass@4    Olmo 3 (arXiv:2512.13961, App. A.4, Table 46: Minerva MATH "1, 4 (4)"); 515
+#                  problems, derivations up to ~3.5k tokens, so n = 4 as for math500_cot.
+#   pass@1 = mean score (with partial credit, like Evalchemy's accuracy); pass@4 counts only
+#   fully correct samples.
+task: jeebench_cot
+output_type: generate_until
+test_split: test
+custom_dataset: !function utils.load_jeebench
+doc_to_text: !function utils.jeebench_doc_to_text
+doc_to_target: gold
+process_results: !function utils.jeebench_process_results
+repeats: 4
+filter_list:
+  - name: all
+    filter:
+      - function: take_first_k
+        k: 4
+generation_kwargs:
+  until: []
+  do_sample: true
+  temperature: 0.6
+  top_p: 0.95
+  max_gen_toks: 4096  # = the rest of the context after each prompt (utils.py)
+metric_list:
+  - {metric: "pass@1", aggregation: mean, higher_is_better: true}
+  - {metric: "pass@4", aggregation: mean, higher_is_better: true}
+  - {metric: think_closed, aggregation: mean, higher_is_better: true}
+metadata:
+  version: 1.0

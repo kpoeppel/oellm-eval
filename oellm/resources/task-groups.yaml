@@ -611,6 +611,65 @@ task_groups:
       - task: "polymath_{lang}_top"
         subset: "{lang}"
 
+  # Pre-training variants of the reasoning and code evals (custom_lm_eval_tasks/flag_cot): `_cot` =
+  # the release prompt + a " <think>\n" prefill, `_cont` = code as a continuation; all sampled, with
+  # pass@1 and pass@k (settings and sources in each task YAML). A third launcher next to the two
+  # halves above (vLLM backend); the release tasks stay as they are.
+  flag-cot-math:
+    description: "Competition math, science QA and JEEBench with forced reasoning (0-shot, <think> prefill, sampled pass@1/pass@k)"
+    suite: lm-eval-harness
+    n_shots: [0]
+    tasks:
+      - task: aime24_cot
+      - task: aime25_cot
+      - task: amc23_cot
+      - task: math500_cot
+      - task: jeebench_cot
+      - task: gpqa_diamond_cot
+
+  flag-cot-code:
+    description: "Code as a continuation (HumanEval/LiveCodeBench 0-shot, MBPP 3-shot; sampled pass@1/pass@k)"
+    suite: lm-eval-harness
+    tasks:
+      - task: humaneval_cont
+        n_shots: [0]
+      - task: livecodebench_cont
+        n_shots: [0]
+      - task: mbpp_cont
+        n_shots: [3]
+
+  flag-cot-polymath-low:
+    description: "PolyMath EU, low tier, forced reasoning (0-shot, <think> prefill, sampled pass@1/pass@4)"
+    suite: lm-eval-harness
+    n_shots: [0]
+    valid_langs: [de, en, es, fr, it, pt]
+    tasks:
+      - task: "polymath_{lang}_low_cot"
+
+  flag-cot-polymath-medium:
+    description: "PolyMath EU, medium tier, forced reasoning (0-shot, <think> prefill, sampled pass@1/pass@4)"
+    suite: lm-eval-harness
+    n_shots: [0]
+    valid_langs: [de, en, es, fr, it, pt]
+    tasks:
+      - task: "polymath_{lang}_medium_cot"
+
+  flag-cot-polymath-high:
+    description: "PolyMath EU, high tier, forced reasoning (0-shot, <think> prefill, sampled pass@1/pass@4)"
+    suite: lm-eval-harness
+    n_shots: [0]
+    valid_langs: [de, en, es, fr, it, pt]
+    tasks:
+      - task: "polymath_{lang}_high_cot"
+
+  flag-cot-polymath-top:
+    description: "PolyMath EU, top tier, forced reasoning (0-shot, <think> prefill, sampled pass@1/pass@4)"
+    suite: lm-eval-harness
+    n_shots: [0]
+    valid_langs: [de, en, es, fr, it, pt]
+    tasks:
+      - task: "polymath_{lang}_top_cot"
+
 super_groups:
   oellm-multilingual:
     description: "Combined Belebele EU set plus multilingual benchmarks"
@@ -684,6 +743,16 @@ super_groups:
       - task: polymath-eu-top
       - task: sib200-eu
       - task: xcsqa-eu
+
+  flag-evals-cot:
+    description: "FLAG pre-training variants: forced-reasoning (_cot) and continuation (_cont) tasks (vLLM backend)"
+    task_groups:
+      - task: flag-cot-math
+      - task: flag-cot-code
+      - task: flag-cot-polymath-low
+      - task: flag-cot-polymath-medium
+      - task: flag-cot-polymath-high
+      - task: flag-cot-polymath-top
 
   flag-evals-lighteval:
     description: "FLAG evaluation, lighteval part (hf backend)"

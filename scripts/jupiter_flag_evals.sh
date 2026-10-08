@@ -12,7 +12,9 @@
 #
 # Defaults are the e-sta-openeurollm setup; override ACCOUNT, FLAG_WORK (on the exports' filesystem,
 # for the hardlinks), VLLM_SIF, LIGHTEVAL_SIF (built from containers/lighteval-jupiter.def), CONCURRENCY, TIME,
-# HALVES (render only "vllm" or "lighteval"; default both), HUMANEVAL_PATCH.
+# HALVES (render / tasks: "vllm", "lighteval", "cot"; default "vllm lighteval"), HUMANEVAL_PATCH.
+# The "cot" half is task group flag-evals-cot (custom_lm_eval_tasks/flag_cot: forced-reasoning _cot
+# and continuation _cont variants of the reasoning and code evals), on the vLLM image like "vllm".
 # Views: identity chat template for vLLM (Evalchemy applies it, lm-eval does not); none for lighteval,
 # which applies any template it finds and caches samples in the model directory.
 # Prefetch: compute nodes are offline, so each harness fetches its datasets inside its own image
@@ -103,7 +105,7 @@ render_setup() {  # sets ARGS, VLLM_EXTRA and SLURM for render_half
 
 render_half() {  # <half> <model dir> <output dir>: renders one launcher, prints its path
     local half=$1 model=$2 out=$3 sif extra="" opts=()
-    if [ "$half" = vllm ]; then
+    if [ "$half" = vllm ] || [ "$half" = cot ]; then
         sif=$VLLM_SIF; extra="$VLLM_EXTRA"
         opts=(--model_backend vllm --data_parallel_size 4 --data_parallel_backend mp
               --model_args dtype=bfloat16,gpu_memory_utilization=0.9,max_num_seqs=32)
@@ -191,7 +193,7 @@ render)
     render_setup
     for name in "$@"; do
         for half in ${HALVES:-vllm lighteval}; do
-            if [ $half = vllm ]; then model=$VIEWS/identity/$name; else model=$VIEWS/plain/$name; fi
+            if [ $half = lighteval ]; then model=$VIEWS/plain/$name; else model=$VIEWS/identity/$name; fi
             [ -f "$model/config.json" ] || { echo "no view $model; run: $0 views <export dir>" >&2; exit 1; }
             script=$(render_half $half "$model" "$FLAG_WORK/runs/$name/$half")
             sed -i -E "s/^(#SBATCH --array=[0-9]+-[0-9]+)%[0-9]+$/\1%${CONCURRENCY:-20}/" "$script"
@@ -208,7 +210,7 @@ tasks)
     render_setup
     tmp=$(mktemp -d "$FLAG_WORK/tasks.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
     csvs=()
-    for half in vllm lighteval; do
+    for half in ${HALVES:-vllm lighteval}; do
         script=$(render_half $half "/oellm-flag-tasks-placeholder/$half" "$tmp/$half")
         csvs+=("$half=$(dirname "$script")/jobs.csv")
     done

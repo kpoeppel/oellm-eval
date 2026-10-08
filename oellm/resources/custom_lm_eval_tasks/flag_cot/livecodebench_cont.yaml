@@ -1,0 +1,38 @@
+# LiveCodeBench as a continuation (`_cont`): a plain document -- "### Question" (the problem),
+# "### Format" (stdin/stdout, or complete the method), "### Answer" and an opened ```python block
+# (with the starter code for functional problems) -- that the model continues as code until the
+# closing fence. Data (release_v2, 511 problems) and test runner are Evalchemy's; for functional
+# problems the method is exposed as a top-level function, which Evalchemy's runner calls (it never
+# finds a class method, so its own LiveCodeBench fails those problems).
+#   temperature 0.6, top_p 0.6   Olmo 3 base code setting (arXiv:2512.13961, App. A.4, Table 46)
+#   max 1024 tokens              Olmo 3 Table 46, MultiPL-E (0-shot code, 1024)
+#   n 8, pass@1 / pass@4         DeepSeek-R1 (arXiv:2501.12948, §3: k "between 4 and 64,
+#                                depending on the test set size"); pass@4 as Olmo 3's small-n
+#                                pass@k (Table 46, Minerva MATH "1, 4 (4)"). Grading runs each
+#                                sample's private tests (6 s per test), so n stays small.
+task: livecodebench_cont
+output_type: generate_until
+test_split: test
+unsafe_code: true
+custom_dataset: !function utils.load_livecodebench
+doc_to_text: !function utils.livecodebench_doc_to_text
+doc_to_target: task_id
+process_results: !function utils.livecodebench_process_results
+repeats: 8
+filter_list:
+  - name: all
+    filter:
+      - function: take_first_k
+        k: 8
+      - function: !function utils.LiveCodeBenchGrade  # grades all samples in one pool (utils.py)
+generation_kwargs:
+  until: ["```"]
+  do_sample: true
+  temperature: 0.6
+  top_p: 0.6
+  max_gen_toks: 1024
+metric_list:
+  - {metric: "pass@1", aggregation: mean, higher_is_better: true}
+  - {metric: "pass@4", aggregation: mean, higher_is_better: true}
+metadata:
+  version: 1.0
