@@ -465,18 +465,36 @@ class LiveCodeBenchGrade:
     Grading inside process_results (called once per problem) kept at most n samples in flight and
     waited for each problem's slowest one (6 s per private test): 511 x 8 samples took more than
     80 min and the task hit its 1:30 limit (v2anneal_120k, 2026-10-08). As a filter it sees all
-    samples, so one pool keeps the node's cores busy. Each sample still runs in its own fresh
-    interpreters (lcb_run -> grade_one.py), so the verdicts are unchanged.
+    samples, so one pool stays busy. Each sample still runs in its own fresh interpreters
+    (lcb_run -> grade_one.py), so the verdicts are unchanged.
+
+    Not more workers: every sample starts three interpreters that import scipy from the container
+    image, and at 64 workers squashfuse could not keep up -- graders overran their budget (an
+    LCBInfrastructureError, 2026-10-08). A sample whose grader still overruns is retried once,
+    alone, before the error is raised.
     """
 
     def __init__(self, **_):
         pass
 
     def apply(self, resps, docs):
+        import threading
+
+        lcb = _livecodebench()
+        alone = threading.Lock()
+
+        def grade(job):
+            try:
+                return _lcb_grade(*job)
+            except lcb.LCBInfrastructureError:
+                with alone:
+                    return _lcb_grade(*job)
+
+        resps = [list(samples) for samples in resps]  # take_first_k hands over a one-shot map
         jobs = [(d, text) for d, samples in zip(docs, resps) for text in samples]
-        workers = min(64, max(8, (os.cpu_count() or 8) // 2))
+        workers = int(os.environ.get("FLAG_LCB_WORKERS", "16"))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            verdicts = iter(list(pool.map(lambda j: _lcb_grade(*j), jobs)))
+            verdicts = iter(list(pool.map(grade, jobs)))
         return [[next(verdicts) for _ in samples] for samples in resps]
 
 
