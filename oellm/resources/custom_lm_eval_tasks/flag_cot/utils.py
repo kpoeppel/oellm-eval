@@ -406,9 +406,21 @@ def load_livecodebench(**_) -> datasets.DatasetDict:
         ex = lcb.map_to_example(
             {**row, "private_test_cases": lcb.translate_private_test_cases(row["private_test_cases"])}
         )
-        ex["test"] = json.dumps(ex["test"])  # nested test cases: keep the dataset flat
+        # The private tests stay out of the doc: lm-eval logs the doc with every sample, and with
+        # them the samples file was 4.3 GB per run (2026-10-08). Graders look them up by task_id.
+        _LCB_TESTS[ex["task_id"]] = ex.pop("test")
+        ex["n_tests"] = len(_LCB_TESTS[ex["task_id"]])
         rows.append(ex)
     return _single(rows)
+
+
+_LCB_TESTS: dict[str, list] = {}
+
+
+def _lcb_tests(task_id: str) -> list:
+    if not _LCB_TESTS:
+        load_livecodebench()
+    return _LCB_TESTS[task_id]
 
 
 LCB_IMPORTS = (
@@ -434,10 +446,12 @@ def _lcb_method_name(starter: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _lcb_grade(doc: dict, text: str) -> float:
-    lcb = _livecodebench()
-    problem = dict(doc)
-    problem["test"] = json.loads(doc["test"])
+_LCB_RUN_TESTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lcb_run_tests.py")
+LCB_TEST_TIMEOUT = 6  # s per test, what Evalchemy passes to lcb_run
+LCB_MEMORY = 4 << 30  # address space per sample
+
+
+def _lcb_program(doc: dict, text: str) -> str:
     starter = doc["entry_point"] or ""
     method = _lcb_method_name(starter) if not doc["is_stdin"] else None
     code = text.split("```")[0]  # the continuation ends at the closing fence
@@ -450,28 +464,64 @@ def _lcb_grade(doc: dict, text: str) -> float:
             # Evalchemy's runner calls the TOP-LEVEL function named by the first "(" of the
             # program (here the starter's method name); expose the method under that name.
             code += f"\n\ndef {method}(*args, **kwargs):\n    return Solution().{method}(*args, **kwargs)\n"
-    try:
-        res = lcb.lcb_run(problem, lcb.post_process_code(code), 6, not doc["is_stdin"])
-    except lcb.LCBInfrastructureError:
-        raise
-    except Exception:
-        return 0.0
-    return float(bool(res) and all(r[0] for r in res))
+    return _livecodebench().post_process_code(code)
+
+
+def _lcb_grade(doc: dict, text: str) -> float | None:
+    """1.0 / 0.0, or None when the runner left no verdicts (it crashed or overran its budget)."""
+    import subprocess
+    import tempfile
+
+    tests = _lcb_tests(doc["task_id"])
+    with tempfile.TemporaryDirectory(prefix="lcb-grade-") as tmp:
+        request, result = os.path.join(tmp, "request.json"), os.path.join(tmp, "result.json")
+        with open(request, "w") as fh:
+            json.dump(dict(tests=tests, completion=_lcb_program(doc, text), is_extracted=not doc["is_stdin"]), fh)
+        try:
+            subprocess.run(
+                [sys.executable, _LCB_RUN_TESTS, f"{BENCH}/LiveCodeBench/livecodebench_utils.py",
+                 request, result, str(LCB_TEST_TIMEOUT), str(LCB_MEMORY)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env={**os.environ, "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1"},
+                # Evalchemy's whole-sample budget, (timeout + 1) x tests + 15 + 30 s; with the per-test
+                # limit only a program that blocks SIGALRM can reach it
+                timeout=(LCB_TEST_TIMEOUT + 1) * len(tests) + 45,
+            )
+            verdicts = json.load(open(result))
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            return None
+    return float(len(verdicts) == len(tests) and all(verdicts))
+
+
+def _output_dir() -> str:
+    """The run's directory: lm-eval runs in this process, so its --output_path is in sys.argv."""
+    argv = sys.argv
+    for i, arg in enumerate(argv):
+        path = argv[i + 1] if arg == "--output_path" and i + 1 < len(argv) else (
+            arg.split("=", 1)[1] if arg.startswith("--output_path=") else None)
+        if path:
+            results = os.path.dirname(path) if path.endswith(".json") else path
+            return os.path.dirname(os.path.abspath(results))
+    return os.getcwd()
 
 
 class LiveCodeBenchGrade:
     """Filter: replace every sample of every problem by its verdict (1.0 / 0.0), graded at once.
 
     Grading inside process_results (called once per problem) kept at most n samples in flight and
-    waited for each problem's slowest one (6 s per private test): 511 x 8 samples took more than
-    80 min and the task hit its 1:30 limit (v2anneal_120k, 2026-10-08). As a filter it sees all
-    samples, so one pool stays busy. Each sample still runs in its own fresh interpreters
-    (lcb_run -> grade_one.py), so the verdicts are unchanged.
+    waited for each problem's slowest one: 511 x 8 samples took more than 80 min and the task hit
+    its 1:30 limit (v2anneal_120k, 2026-10-08). As a filter it sees all samples, so one pool stays
+    busy. Each sample runs in its own interpreter (lcb_run_tests.py: Evalchemy's tests, with a
+    per-test time limit and a memory cap).
 
-    Not more workers: every sample starts three interpreters that import scipy from the container
-    image, and at 64 workers squashfuse could not keep up -- graders overran their budget (an
-    LCBInfrastructureError, 2026-10-08). A sample whose grader still overruns is retried once,
-    alone, before the error is raised.
+    Before grading, the generations are written to <run>/generations/livecodebench_cont_<job>.jsonl
+    (one line per problem: task_id, the n generations), so a grading failure or a timeout does not
+    lose them; regrade_livecodebench.py grades such a file (or lm-eval's samples file) offline.
+
+    16 workers: at 64, the graders' interpreter start-ups from the container image overran their
+    budget (2026-10-08). A sample whose runner leaves no verdicts is retried once, alone, then
+    counted as failed; if that happens to more than 5% of the samples, grading itself is broken
+    and the task fails instead of reporting a wrong score.
     """
 
     def __init__(self, **_):
@@ -479,22 +529,39 @@ class LiveCodeBenchGrade:
 
     def apply(self, resps, docs):
         import threading
-
-        lcb = _livecodebench()
-        alone = threading.Lock()
-
-        def grade(job):
-            try:
-                return _lcb_grade(*job)
-            except lcb.LCBInfrastructureError:
-                with alone:
-                    return _lcb_grade(*job)
+        import time
 
         resps = [list(samples) for samples in resps]  # take_first_k hands over a one-shot map
+        dump_dir = os.path.join(_output_dir(), "generations")
+        os.makedirs(dump_dir, exist_ok=True)
+        dump = os.path.join(dump_dir, f"livecodebench_cont_{os.environ.get('SLURM_JOB_ID', os.getpid())}.jsonl")
+        with open(dump, "w") as fh:
+            for d, samples in zip(docs, resps):
+                fh.write(json.dumps(dict(task_id=d["task_id"], generations=samples)) + "\n")
+        print(f"livecodebench_cont: {len(resps)} problems' generations written to {dump}", flush=True)
+
+        alone = threading.Lock()
+        lost = []
+
+        def grade(job):
+            verdict = _lcb_grade(*job)
+            if verdict is None:
+                with alone:
+                    verdict = _lcb_grade(*job)
+            if verdict is None:
+                lost.append(job[0]["task_id"])
+                verdict = 0.0
+            return verdict
+
         jobs = [(d, text) for d, samples in zip(docs, resps) for text in samples]
         workers = int(os.environ.get("FLAG_LCB_WORKERS", "16"))
+        start = time.time()
         with ThreadPoolExecutor(max_workers=workers) as pool:
             verdicts = iter(list(pool.map(grade, jobs)))
+        print(f"livecodebench_cont: graded {len(jobs)} samples in {time.time() - start:.0f} s, "
+              f"{len(lost)} without verdicts", flush=True)
+        if len(lost) > 0.05 * len(jobs):
+            raise RuntimeError(f"livecodebench_cont: {len(lost)} of {len(jobs)} samples left no verdicts")
         return [[next(verdicts) for _ in samples] for samples in resps]
 
 
