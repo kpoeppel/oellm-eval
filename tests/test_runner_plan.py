@@ -106,6 +106,9 @@ def test_lighteval_loads_the_plain_model_saves_details_and_sets_ep(tmp_path):
     (c2,) = commands.unit_commands(plan2, le2, le2.rows)
     assert c2.argv[3:5] == ["accelerate", f"model_name={plan.model_dir},trust_remote_code=True,batch_size=32"]
     assert "OELLM_EP" not in c2.env
+    plan3 = _plan(tmp_path, lighteval=GroupSettings(backend="accelerate", engine=Engine(tp=1)))
+    le3 = next(u for u in plan3.units if u.kind == "lighteval")
+    assert commands.unit_commands(plan3, le3, le3.rows)[0].argv[4].endswith(",batch_size=32,model_parallel=False")
 
 
 def test_evalchemy_one_call_per_task_on_the_view(tmp_path):

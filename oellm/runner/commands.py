@@ -49,6 +49,8 @@ def lighteval(plan: Plan, unit: Unit, rows: list[Row]) -> Command:
     tasks = ",".join(f"{r.task}|{r.n_shot}" for r in rows)
     if unit.backend == "accelerate":  # HF transformers: oellm-eval's template.sbatch command
         model_args = f"model_name={plan.model_dir},trust_remote_code=True,batch_size={ACCELERATE_BATCH_SIZE}"
+        if g.tp == 1:  # one GPU: HF's automatic map split even a 130M model (tied embeddings on the last GPU)
+            model_args += ",model_parallel=False"
         env = dict(unit.env)
     else:
         model_args = (f"model_name={plan.model_dir},trust_remote_code=True,dtype=bfloat16,"

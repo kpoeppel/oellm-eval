@@ -17,7 +17,8 @@
 #   scripts/jupiter_flag_evals.sh worker  <name> --unit <id> | --index <i> | --all [--print]  # in this allocation
 #   scripts/jupiter_flag_evals.sh collect <name>              # <name>.tasks.csv + <name>.missing.csv
 # plan: NAMES (comma-separated row names), HARNESSES, LIMIT; LM_WORKERS (8), LM_TP (1), LM_REPLICAS
-# (4 / LM_TP), LE_GROUPS (8), LE_BACKEND (accelerate: the HF backend these results always used),
+# (4 / LM_TP), LE_GROUPS (8), LE_BACKEND (accelerate: the HF backend these results always used), LE_TP
+# (4: the model over the node's GPUs; 1: one GPU, for small models),
 # EC_GROUPS (4), EC_DP (4); SETTINGS=<json> replaces all of them. Results: $FLAG_WORK/worker/<name>.
 #
 # Defaults are the e-sta-openeurollm setup; override ACCOUNT, FLAG_WORK (on the exports' filesystem,
@@ -324,7 +325,7 @@ plan)
              "engine": {"tp": $tp, "dp": 1, "expert_parallel": false, "replicas": ${LM_REPLICAS:-$((4 / tp))},
                         "max_num_seqs": 32, "max_num_batched_tokens": null, "gpu_memory_utilization": 0.9}},
  "lighteval": {"groups": ${LE_GROUPS:-8}, "max_rows": 10, "backend": "${LE_BACKEND:-accelerate}",
-               "engine": {"tp": 4, "dp": 1, "expert_parallel": false, "max_num_seqs": 64}},
+               "engine": {"tp": ${LE_TP:-4}, "dp": 1, "expert_parallel": false, "max_num_seqs": 64}},
  "evalchemy": {"groups": ${EC_GROUPS:-4}, "env": {"OELLM_VLLM_ENFORCE_EAGER": "0"},
                "engine": {"tp": 1, "dp": ${EC_DP:-4}, "expert_parallel": false, "max_num_seqs": 32,
                           "max_num_batched_tokens": null, "gpu_memory_utilization": 0.9}}}
