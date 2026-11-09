@@ -257,8 +257,9 @@ def main(argv=None):
     else:
         n_run = _queue_loop(queue, make_row, is_done, run_row, a.dp, rank0)
     print(f"[lm_eval_queue] shard {a.shard}: {n_run - len(failed)} ok, failed: {failed}; {time.time() - t0:.0f} s", flush=True)
-    if a.dp > 1:
-        lm.model.llm_engine.engine_core.shutdown()
+    # an explicit engine shutdown: left to interpreter teardown, a single engine aborts (SIGABRT
+    # after its results are written, 2026-11-09), and DP frontends hang
+    lm.model.llm_engine.engine_core.shutdown()
     sys.exit(1 if failed else 0)
 
 
