@@ -260,6 +260,13 @@ def main(argv=None):
     # an explicit engine shutdown: left to interpreter teardown, a single engine aborts (SIGABRT
     # after its results are written, 2026-11-09), and DP frontends hang
     lm.model.llm_engine.engine_core.shutdown()
+    if a.dp == 1:
+        # vLLM 0.32's in-process engine leaves a C++ thread that aborts interpreter teardown
+        # ("terminate called without an active exception", SIGABRT; MN5 2026-11-09) after every
+        # result and marker is written: end the process without the teardown
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(1 if failed else 0)
     sys.exit(1 if failed else 0)
 
 
