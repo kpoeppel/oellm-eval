@@ -349,7 +349,8 @@ def _run_part(t, a, lm, tm, out, done, cache_prefix, simple_evaluate, t1) -> boo
         lm.barrier()
         return True
     parts_dir = out / "parts" / row_key
-    lmeval_parts.write_part(parts_dir / f"part{k}of{n}.json", t["task"], t["n_shot"], k, n, res.pop("samples"))
+    lmeval_parts.write_part(parts_dir / f"part{k}of{n}.json", t["task"], t["n_shot"], k, n, res.pop("samples"),
+                            samples_dir=out / "results" / row_key)
     (done / f"{lmeval_parts.part_key(t['task'], t['n_shot'], k, n)}.ok").write_text(
         json.dumps({"time_s": round(time.time() - t1, 1), "part": [k, n]}) + "\n")
     # the part that completes the set merges (a lock: two parts may finish at once)

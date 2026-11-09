@@ -57,11 +57,24 @@ def raw_metrics(samples: dict[str, list[dict]]) -> dict[str, list]:
     return out
 
 
-def write_part(path: Path, task: str, n_shot: int, k: int, n: int, samples: dict[str, list[dict]]) -> None:
+def write_part(path: Path, task: str, n_shot: int, k: int, n: int, samples: dict[str, list[dict]],
+               samples_dir: Path | None = None) -> None:
+    """The part's raw metrics (the merge's input) and, with ``samples_dir``, its logged samples as
+    lm-eval writes them for a whole row (samples_<leaf>_part<k>of<n>.jsonl): the per-sample prompts,
+    responses and metrics, which the raw metrics alone do not keep for multiple-choice rows."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps({"task": task, "n_shot": n_shot, "part": [k, n], "raw": raw_metrics(samples)}))
     tmp.replace(path)
+    if samples_dir is not None:
+        samples_dir.mkdir(parents=True, exist_ok=True)
+        for leaf, examples in samples.items():
+            out = samples_dir / f"samples_{leaf}_part{k}of{n}.jsonl"
+            tmp = out.with_suffix(".tmp")
+            with tmp.open("w") as fh:
+                for ex in examples:
+                    fh.write(json.dumps(ex, default=str, ensure_ascii=False) + "\n")
+            tmp.replace(out)
 
 
 def merge(task_manager, task: str, n_shot: int, parts: list[dict], bootstrap_iters: int = 100000) -> dict:

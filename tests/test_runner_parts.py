@@ -48,3 +48,10 @@ def test_raw_metrics_in_document_order(tmp_path):
     lp.write_part(path, "t", 0, 1, 3, samples)
     data = json.loads(path.read_text())
     assert data["part"] == [1, 3] and data["raw"] == raw
+
+
+def test_parts_also_keep_their_samples(tmp_path):
+    samples = {"t": [{"doc_id": 3, "filter": "none", "metrics": ["acc"], "acc": 1.0, "resps": [["x"]]}]}
+    lp.write_part(tmp_path / "p" / "part0of2.json", "t", 0, 0, 2, samples, samples_dir=tmp_path / "res")
+    line = json.loads((tmp_path / "res" / "samples_t_part0of2.jsonl").read_text())
+    assert line["doc_id"] == 3 and line["resps"] == [["x"]]
