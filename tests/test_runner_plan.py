@@ -139,12 +139,14 @@ def test_local_runtime_puts_this_checkout_first(tmp_path, monkeypatch):
                  harness_pythonpath={"lighteval": ["/pylibs_le"]}, dirs={"evalchemy": "/ec"})
     argv, env, cwd = rt.wrap(["python", "-m", "x"], "lighteval", {"C": "3"}, None, [])
     assert argv == ["/py", "-m", "x"] and cwd is None
-    assert env["PYTHONPATH"] == f"{OELLM_ROOT}:/stage:/pylibs_le:/inherited"
+    assert env["PYTHONPATH"] == f"{OELLM_ROOT}:/pylibs_le:/stage:/inherited"
     assert (env["A"], env["B"], env["C"]) == ("1", "2", "3")
     _, env2, cwd2 = rt.wrap(["python", "-m", "eval.eval"], "evalchemy", {}, "evalchemy", [])
     assert cwd2 == "/ec" and "B" not in env2 and env2["PYTHONPATH"] == f"{OELLM_ROOT}:/stage:/inherited"
     with pytest.raises(ValueError, match="no directory"):
         Runtime().wrap(["python"], "evalchemy", {}, "evalchemy", [])
+    monkeypatch.setenv("INFER_PY", "/node/venv/python")
+    assert Runtime(python="${INFER_PY}").wrap(["python", "-V"], "lighteval", {}, None, [])[0] == ["/node/venv/python", "-V"]
 
 
 def test_apptainer_runtime_binds_and_passes_the_environment(tmp_path, monkeypatch):

@@ -8,7 +8,8 @@
 
 Either way this checkout comes first on PYTHONPATH, so the harness modules (lm_eval_queue,
 lighteval_cli) are the plan's. ``env`` / ``harness_env`` are set for every / one harness's
-commands; ``pythonpath`` / ``harness_pythonpath`` go after this checkout.
+commands; after this checkout come ``harness_pythonpath`` (a harness's own pins) and ``pythonpath``.
+``python`` may name an environment variable (``${INFER_PY}``), expanded where the command starts.
 """
 
 from __future__ import annotations
@@ -75,15 +76,16 @@ class Runtime:
     # ------------------------------------------------------------ commands
 
     def _pythonpath(self, harness: str, inherited: str | None) -> str:
-        front = [OELLM_ROOT, *self.pythonpath, *self.harness_pythonpath.get(harness, [])]
+        # a harness's own pins (e.g. lighteval's metric packages) shadow the shared paths
+        front = [OELLM_ROOT, *self.harness_pythonpath.get(harness, []), *self.pythonpath]
         return ":".join([*front, *([inherited] if inherited else [])])
 
     def wrap(self, argv: list[str], harness: str, env: dict[str, str], cwd_key: str | None,
              mounts: list[str]) -> tuple[list[str], dict[str, str], str | None]:
         """(argv, environment, cwd) to start a harness command; ``mounts``: paths the command
         reads or writes (bound at their own paths in an image)."""
-        if argv[0] == "python":
-            argv = [self.python, *argv[1:]]
+        if argv[0] == "python":  # $VAR / ${VAR}: an interpreter known only on the node (a node-local venv)
+            argv = [os.path.expandvars(self.python), *argv[1:]]
         cwd = self.dirs.get(cwd_key) if cwd_key else None
         if cwd_key and not cwd:
             raise ValueError(f"runtime has no directory {cwd_key!r} (dirs)")
