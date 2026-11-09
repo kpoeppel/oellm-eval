@@ -32,7 +32,8 @@ LOAD_S = 600.0  # one model load, inside a reference row time
 
 @dataclass
 class Engine:
-    """One vLLM engine: ``tp`` x ``dp`` GPUs (dp > 1: node-local DP frontends, expert parallel)."""
+    """One vLLM engine: ``tp`` x ``dp`` GPUs. dp > 1: an lm-eval session's node-local DP frontends
+    (expert parallel, node_ep.py), else vLLM's own data parallelism (evalchemy, lighteval)."""
 
     tp: int = 4
     dp: int = 1
@@ -48,8 +49,6 @@ class Engine:
     def check(self, where: str) -> None:
         if self.tp < 1 or self.dp < 1 or self.replicas < 1:
             raise ValueError(f"{where}: tp, dp and replicas must be positive")
-        if self.dp > 1 and not self.expert_parallel:
-            raise ValueError(f"{where}: node-local DP needs expert_parallel")
         if self.response_cache and self.request_batch_size is None:
             raise ValueError(f"{where}: response_cache needs request_batch_size")
 
@@ -74,6 +73,10 @@ class Unit:
         if bad:
             raise ValueError(f"unit {self.id}: rows of another harness: {bad}")
         self.engine.check(f"unit {self.id}")
+        if self.kind == "lm_eval_session" and self.engine.dp > 1 and not self.engine.expert_parallel:
+            raise ValueError(f"unit {self.id}: the session's node-local DP needs expert_parallel (else: replicas)")
+        if self.kind != "lm_eval_session" and self.engine.replicas != 1:
+            raise ValueError(f"unit {self.id}: replicas are for lm-eval sessions")
 
 
 @dataclass

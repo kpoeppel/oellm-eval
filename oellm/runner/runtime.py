@@ -44,7 +44,11 @@ class Runtime:
     prune: dict[str, list[str]] = field(default_factory=dict)  # removed before a harness's first command
     hash_files: list[str] = field(default_factory=list)  # provenance: sha256 of these (patched harness files)
     hang_minutes: float = 15.0          # end a command this long silent after vLLM's shutdown (0: never)
+    # apptainer with --contain/--containall: a private directory per unit run under this root is the
+    # image's /tmp, /var/tmp and home (a contained /tmp is a tiny tmpfs, 16 MiB on JUPITER)
+    job_tmp_root: str = ""
     name: str = ""
+    active_tmp: str = field(default="", repr=False, compare=False)  # set by the worker while a unit runs
 
     def check(self) -> None:
         if self.kind not in ("local", "apptainer"):
@@ -57,6 +61,7 @@ class Runtime:
     @classmethod
     def from_json(cls, text: str) -> "Runtime":
         data = json.loads(text)
+        data.pop("active_tmp", None)
         unknown = sorted(set(data) - {f.name for f in dataclasses.fields(cls)})
         if unknown:
             raise ValueError(f"runtime: unknown keys {unknown}")
@@ -65,7 +70,9 @@ class Runtime:
         return rt
 
     def to_json(self) -> str:
-        return json.dumps(dataclasses.asdict(self), indent=1) + "\n"
+        data = dataclasses.asdict(self)
+        data.pop("active_tmp")
+        return json.dumps(data, indent=1) + "\n"
 
     def write(self, path: str | Path) -> Path:
         path = Path(path)
@@ -89,7 +96,8 @@ class Runtime:
         cwd = self.dirs.get(cwd_key) if cwd_key else None
         if cwd_key and not cwd:
             raise ValueError(f"runtime has no directory {cwd_key!r} (dirs)")
-        cmd_env = {**self.env, **self.harness_env.get(harness, {}), **env}
+        # values may name the node's environment ($SLURM_JOB_ID ...), expanded where the command starts
+        cmd_env = {k: os.path.expandvars(v) for k, v in {**self.env, **self.harness_env.get(harness, {}), **env}.items()}
         if self.kind == "local":
             full = {**os.environ, **cmd_env}
             full["PYTHONPATH"] = self._pythonpath(harness, os.environ.get("PYTHONPATH"))
@@ -102,7 +110,12 @@ class Runtime:
         inner = {**cmd_env, "PYTHONPATH": self._pythonpath(harness, cmd_env.get("PYTHONPATH"))}
         if "CUDA_VISIBLE_DEVICES" in os.environ and "CUDA_VISIBLE_DEVICES" not in inner:
             inner["CUDA_VISIBLE_DEVICES"] = os.environ["CUDA_VISIBLE_DEVICES"]
-        wrapped = [self.apptainer, "exec", *self.apptainer_args, "--bind", ",".join(binds)]
+        extra: list[str] = []
+        if self.active_tmp:
+            binds += [f"{self.active_tmp}:/tmp", f"{self.active_tmp}:/var/tmp"]
+            extra = ["--home", f"{self.active_tmp}/home:/tmp/home"]
+            inner = {"TMPDIR": "/tmp", "TMP": "/tmp", "TEMP": "/tmp", **inner}
+        wrapped = [self.apptainer, "exec", *self.apptainer_args, *extra, "--bind", ",".join(binds)]
         if cwd:
             wrapped += ["--pwd", cwd]
         # `env K=V` inside the image: values may hold commas (apptainer --env splits at them)
@@ -110,6 +123,23 @@ class Runtime:
         return wrapped, dict(os.environ), None
 
     # ------------------------------------------------------------ node housekeeping
+
+    def open_tmp(self) -> str:
+        """The unit run's private /tmp (apptainer with job_tmp_root); '' otherwise."""
+        if self.kind != "apptainer" or not self.job_tmp_root:
+            return ""
+        import tempfile
+
+        root = os.path.expandvars(self.job_tmp_root)
+        os.makedirs(root, exist_ok=True)
+        self.active_tmp = tempfile.mkdtemp(prefix=f"oellm-eval-{os.environ.get('SLURM_JOB_ID', 'local')}.", dir=root)
+        os.makedirs(f"{self.active_tmp}/home", exist_ok=True)
+        return self.active_tmp
+
+    def close_tmp(self) -> None:
+        if self.active_tmp:
+            shutil.rmtree(self.active_tmp, ignore_errors=True)
+            self.active_tmp = ""
 
     def cleanup(self) -> list[str]:
         removed = []

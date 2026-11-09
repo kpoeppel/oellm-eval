@@ -170,7 +170,7 @@ def run_unit(plan: Plan, runtime: Runtime, unit: Unit, *, plan_path: str = "", r
         print(f"[worker] {unit.id}: every row is done", flush=True)
         return 0
     record = {"plan": plan_path, "plan_sha256": provenance.sha256(plan_path) if plan_path else None,
-              "runtime": runtime.__dict__, "runtime_path": runtime_path,
+              "runtime": {k: v for k, v in runtime.__dict__.items() if k != "active_tmp"}, "runtime_path": runtime_path,
               "runtime_sha256": provenance.sha256(runtime_path) if runtime_path else None,
               "unit": {"id": unit.id, "kind": unit.kind, "rows": [r.name for r in unit.rows], "backend": unit.backend,
                        "engine": unit.engine.__dict__, "env": unit.env},
@@ -180,6 +180,9 @@ def run_unit(plan: Plan, runtime: Runtime, unit: Unit, *, plan_path: str = "", r
               "hash_files": {f: provenance.sha256(f) for f in runtime.hash_files}, "commands": []}
     if probe:
         record["harnesses"] = {h: provenance.probe_versions(runtime, h) for h in dict.fromkeys(c.harness for c in cmds)}
+    tmp = runtime.open_tmp()
+    if tmp:
+        print(f"[worker] {unit.id}: private /tmp {tmp}", flush=True)
     removed = runtime.cleanup()
     if removed:
         print(f"[worker] removed {len(removed)} leftover file(s): {removed[:4]}", flush=True)
@@ -228,6 +231,7 @@ def run_unit(plan: Plan, runtime: Runtime, unit: Unit, *, plan_path: str = "", r
             rc = 1 if missing and not missing_ok else 0
     finally:
         runtime.cleanup()
+        runtime.close_tmp()
         record["end_utc"] = provenance.now()
         record["rows"] = {"done": [r.name for r in done], "missing": [r.name for r in missing]}
         record["rc"] = rc

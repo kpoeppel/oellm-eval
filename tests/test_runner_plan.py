@@ -200,3 +200,45 @@ def test_runner_modules_import_only_the_standard_library():
     r = subprocess.run([sys.executable, "-c", code], env={**os.environ, "PYTHONPATH": OELLM_ROOT},
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_dp_without_ep_is_for_vllms_own_data_parallelism(tmp_path):
+    plan = _plan(tmp_path, evalchemy=GroupSettings(engine=Engine(tp=1, dp=4, expert_parallel=False)))
+    ec = next(u for u in plan.units if u.kind == "evalchemy")
+    (c, _) = commands.unit_commands(plan, ec, ec.rows)
+    ma = c.argv[c.argv.index("--model_args") + 1]
+    assert ",data_parallel_size=4,data_parallel_backend=mp" in ma and "expert_parallel" not in ma
+    with pytest.raises(ValueError, match="replicas"):
+        _plan(tmp_path, evalchemy=GroupSettings(engine=Engine(replicas=2)))
+
+
+def test_contained_images_get_a_private_tmp_and_env_values_expand(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLURM_JOB_ID", "77")
+    rt = Runtime(kind="apptainer", images={h: "/v.sif" for h in ("lm-eval-harness", "lighteval", "evalchemy")},
+                 apptainer_args=["--containall"], job_tmp_root=str(tmp_path / "jt"),
+                 env={"HF_METRICS_CACHE": "/hf/metrics/job_${SLURM_JOB_ID}"})
+    tmp = rt.open_tmp()
+    assert tmp.startswith(str(tmp_path / "jt" / "oellm-eval-77.")) and os.path.isdir(f"{tmp}/home")
+    argv, _, _ = rt.wrap(["python", "-c", "x"], "lighteval", {}, None, [])
+    binds = argv[argv.index("--bind") + 1].split(",")
+    assert f"{tmp}:/tmp" in binds and f"{tmp}:/var/tmp" in binds
+    assert argv[argv.index("--home") + 1] == f"{tmp}/home:/tmp/home"
+    assert "HF_METRICS_CACHE=/hf/metrics/job_77" in argv and "TMPDIR=/tmp" in argv
+    assert "active_tmp" not in json.loads(rt.to_json())
+    rt.close_tmp()
+    assert not os.path.exists(tmp) and "--home" not in rt.wrap(["python"], "lighteval", {}, None, [])[0]
+
+
+def test_runtime_cli_writes_a_checked_runtime(tmp_path):
+    from oellm.runner import cli
+
+    out = tmp_path / "rt.json"
+    assert cli.main(["runtime", "--kind", "apptainer", "--image", "lm-eval-harness=/v.sif", "--image", "evalchemy=/v.sif",
+                     "--image", "lighteval=/l.sif", "--args", "--nv --cleanenv --env HF_HUB_CACHE=/hf/hub",
+                     "--harness-bind", "evalchemy=/p.py:/opt/x.py:ro", "--env", "HF_HOME=/hf", "--dir",
+                     "evalchemy=/opt/evalchemy", "--job-tmp-root", "/tmp", "-o", str(out)]) == 0
+    rt = Runtime.from_json(out.read_text())
+    assert rt.apptainer_args == ["--nv", "--cleanenv", "--env", "HF_HUB_CACHE=/hf/hub"]
+    assert rt.harness_binds == {"evalchemy": ["/p.py:/opt/x.py:ro"]} and rt.env == {"HF_HOME": "/hf"}
+    with pytest.raises(ValueError, match="no image"):
+        cli.main(["runtime", "--kind", "apptainer", "-o", str(out)])

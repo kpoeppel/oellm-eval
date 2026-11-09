@@ -5,6 +5,9 @@
         [--settings settings.json] [--limit 20] [--tag t] [--init-queue] -o plan.json
     python -m oellm.runner.cli status --plan plan.json
     python -m oellm.runner.cli requeue-failed --plan plan.json
+    python -m oellm.runner.cli runtime --kind apptainer --image lm-eval-harness=<sif> ... \\
+        [--args="<apptainer args>"] [--bind src:dst[:ro]] [--harness-bind evalchemy=<bind>] [--env K=V] \\
+        [--dir evalchemy=/opt/evalchemy] [--job-tmp-root /tmp] -o runtime.json
 
 settings.json: {"lm_eval": SessionSettings, "lighteval": GroupSettings, "evalchemy": GroupSettings}
 (plan.py; a harness left out is not planned; ``{}`` takes the defaults). ``--names`` selects rows
@@ -16,6 +19,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -24,7 +28,7 @@ from oellm.runner.plan import (
     Engine, GroupSettings, SessionSettings, build_plan, init_queue, read_plan, rows_from_task_groups,
 )
 from oellm.runner.queue import Queue
-from oellm.runner.runtime import OELLM_ROOT
+from oellm.runner.runtime import OELLM_ROOT, Runtime
 
 DEFAULT_GROUPS = "vllm=flag-evals-vllm,lighteval=flag-evals-lighteval"
 
@@ -85,7 +89,43 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("status", "requeue-failed"):
         s = sub.add_parser(name)
         s.add_argument("--plan", required=True)
+    r = sub.add_parser("runtime")
+    r.add_argument("--kind", choices=["local", "apptainer"], default="local")
+    r.add_argument("--python", default="python3")
+    r.add_argument("--name", default="")
+    r.add_argument("--image", action="append", default=[], metavar="HARNESS=SIF")
+    r.add_argument("--args", default="", help="apptainer exec arguments (one string, shell-split)")
+    r.add_argument("--bind", action="append", default=[])
+    r.add_argument("--harness-bind", action="append", default=[], metavar="HARNESS=BIND")
+    r.add_argument("--env", action="append", default=[], metavar="K=V")
+    r.add_argument("--harness-env", action="append", default=[], metavar="HARNESS:K=V")
+    r.add_argument("--pythonpath", action="append", default=[])
+    r.add_argument("--dir", action="append", default=[], metavar="KEY=PATH")
+    r.add_argument("--gpus", type=int, default=4)
+    r.add_argument("--job-tmp-root", default="")
+    r.add_argument("--hang-minutes", type=float, default=15.0)
+    r.add_argument("--hash-file", action="append", default=[])
+    r.add_argument("-o", "--output", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "runtime":
+        kv = lambda items: dict(i.split("=", 1) for i in items)  # noqa: E731
+        hb: dict[str, list[str]] = {}
+        for i in a.harness_bind:
+            h, b = i.split("=", 1)
+            hb.setdefault(h, []).append(b)
+        he: dict[str, dict[str, str]] = {}
+        for i in a.harness_env:
+            h, rest = i.split(":", 1)
+            k, v = rest.split("=", 1)
+            he.setdefault(h, {})[k] = v
+        rt = Runtime(kind=a.kind, python=a.python, name=a.name, images=kv(a.image), apptainer_args=shlex.split(a.args),
+                     binds=a.bind, harness_binds=hb, env=kv(a.env), harness_env=he, pythonpath=a.pythonpath,
+                     dirs=kv(a.dir), gpus=a.gpus, job_tmp_root=a.job_tmp_root, hang_minutes=a.hang_minutes,
+                     hash_files=a.hash_file)
+        rt.check()
+        rt.write(a.output)
+        print(f"{a.output}: {a.kind} runtime" + (f", images {sorted(rt.images)}" if rt.images else ""))
+        return 0
     if a.cmd == "plan":
         halves = dict(kv.split("=", 1) for kv in a.groups.split(","))
         rows = rows_from_task_groups(halves)

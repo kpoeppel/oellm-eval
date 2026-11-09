@@ -10,6 +10,16 @@
 #   scripts/jupiter_flag_evals.sh run-one  <name> <half> <row> <task>  # one row, in this allocation
 #   oellm-eval collect --results_dir $FLAG_WORK/runs/<export name> --output_csv <name>.csv
 #
+# Node-local runner (docs/node-local-runner.md): the same plans, commands and results layout as the
+# MareNostrum 5 pool jobs; the nodes come from an sbatch array here, or from a pool job (oellm-autoexp).
+#   scripts/jupiter_flag_evals.sh plan    <name>              # plan.json + runtime.json + queue (login node)
+#   scripts/jupiter_flag_evals.sh array   <name>              # an sbatch array, task i = unit i; prints sbatch
+#   scripts/jupiter_flag_evals.sh worker  <name> --unit <id> | --index <i> | --all [--print]  # in this allocation
+#   scripts/jupiter_flag_evals.sh collect <name>              # <name>.tasks.csv + <name>.missing.csv
+# plan: NAMES (comma-separated row names), HARNESSES, LIMIT; LM_WORKERS (8), LM_TP (1), LM_REPLICAS
+# (4 / LM_TP), LE_GROUPS (8), LE_BACKEND (accelerate: the HF backend these results always used),
+# EC_GROUPS (4), EC_DP (4); SETTINGS=<json> replaces all of them. Results: $FLAG_WORK/worker/<name>.
+#
 # Defaults are the e-sta-openeurollm setup; override ACCOUNT, FLAG_WORK (on the exports' filesystem,
 # for the hardlinks), VLLM_SIF, LIGHTEVAL_SIF (built from containers/lighteval-jupiter.def), CONCURRENCY, TIME,
 # HALVES (render / tasks: "vllm", "lighteval", "cot"; default "vllm lighteval"), HUMANEVAL_PATCH.
@@ -63,7 +73,14 @@ from oellm.main import main
 main()' "$@"
 }
 VIEWS="$FLAG_WORK/views"
-MODE="${1:?usage: $0 views|prefetch|render|tasks|run-one|check ...}"; shift
+MODE="${1:?usage: $0 views|prefetch|render|tasks|run-one|plan|array|worker|collect|check ...}"; shift
+WORKER_OUT="$FLAG_WORK/worker"
+HOST_PY=${HOST_PY:-python3}   # the worker: standard library only, it starts the images itself
+launch_of() {  # <name>: the latest plan launch of the model (or $LAUNCH)
+    local d=${LAUNCH:-$WORKER_OUT/$1${LIMIT:+_limit$LIMIT}/launches/latest}
+    [ -f "$d/plan.json" ] || { echo "no plan launch $d; run: $0 plan $1" >&2; exit 1; }
+    readlink -f "$d"
+}
 if [ "$MODE" != views ] || [ "$OELLM_TOOL" = image ]; then
     for f in "$VLLM_SIF" "$LIGHTEVAL_SIF"; do [ -f "$f" ] || { echo "missing image $f" >&2; exit 1; }; done
 fi
@@ -291,6 +308,84 @@ run-one)
     [ "$hung" = 0 ] || exit 124
     [ "$rc" = 0 ] || exit "$rc"
     printf '%s %s %s\n' "$(date -Is)" "${SLURM_JOB_ID:-local}" "$task" > "$done_dir/$row.ok"
+    ;;
+plan)
+    name=${1:?usage: $0 plan <name>}
+    model=$VIEWS/plain/$name view=$VIEWS/identity/$name
+    [ -f "$model/config.json" ] || { echo "no view $model; run: $0 views <export dir>" >&2; exit 1; }
+    render_setup
+    root=$WORKER_OUT/$name${LIMIT:+_limit$LIMIT}
+    launch=$root/launches/$(date -u +%Y%m%dT%H%M%SZ)
+    mkdir -p "$launch"
+    tp=${LM_TP:-1}
+    if [ -n "${SETTINGS:-}" ]; then cp "$SETTINGS" "$launch/settings.json"; else
+        cat > "$launch/settings.json" <<EOF
+{"lm_eval": {"workers": ${LM_WORKERS:-8}, "env": {"OELLM_VLLM_ENFORCE_EAGER": "0"},
+             "engine": {"tp": $tp, "dp": 1, "expert_parallel": false, "replicas": ${LM_REPLICAS:-$((4 / tp))},
+                        "max_num_seqs": 32, "max_num_batched_tokens": null, "gpu_memory_utilization": 0.9}},
+ "lighteval": {"groups": ${LE_GROUPS:-8}, "max_rows": 10, "backend": "${LE_BACKEND:-accelerate}",
+               "engine": {"tp": 4, "dp": 1, "expert_parallel": false, "max_num_seqs": 64}},
+ "evalchemy": {"groups": ${EC_GROUPS:-4}, "env": {"OELLM_VLLM_ENFORCE_EAGER": "0"},
+               "engine": {"tp": 1, "dp": ${EC_DP:-4}, "expert_parallel": false, "max_num_seqs": 32,
+                          "max_num_batched_tokens": null, "gpu_memory_utilization": 0.9}}}
+EOF
+    fi
+    tool_py -m oellm.runner.cli plan --model-dir "$model" --view-dir "$view" --model-name "$name" --out "$WORKER_OUT" \
+        --settings "$launch/settings.json" ${NAMES:+--names "$NAMES"} ${HARNESSES:+--harnesses "$HARNESSES"} \
+        ${LIMIT:+--limit "$LIMIT"} --init-queue -o "$launch/plan.json"
+    # the images of the array launcher (render_setup: --containall, offline HF, the patched HumanEval grader)
+    he=()
+    [ -n "$VLLM_EXTRA" ] && he=(--harness-bind "evalchemy=$HUMANEVAL_PATCH:$HE_TARGET:ro" --hash-file "$HUMANEVAL_PATCH")
+    tool_py -m oellm.runner.cli runtime --kind apptainer --name jupiter --python python \
+        --image "lm-eval-harness=$VLLM_SIF" --image "evalchemy=$VLLM_SIF" --image "lighteval=$LIGHTEVAL_SIF" \
+        --args="$(echo $ARGS)" --bind "$HF_HOME" "${he[@]}" \
+        --env "HF_HOME=$HF_HOME" --env "HF_DATASETS_CACHE=$HF_DATASETS_CACHE" --env HF_HUB_OFFLINE=1 \
+        --env TRANSFORMERS_OFFLINE=1 --env "NLTK_DATA=$NLTK_DATA" --env VLLM_WORKER_MULTIPROC_METHOD=spawn \
+        --env 'HF_METRICS_CACHE='"$HF_HOME"'/metrics/job_${SLURM_JOB_ID}' \
+        --dir evalchemy=/opt/evalchemy --job-tmp-root "${OELLM_EVAL_TMP_ROOT:-/tmp}" -o "$launch/runtime.json"
+    tool_py -c 'import sys; from oellm.reports.manifest import write_manifest
+print(write_manifest(sys.argv[1], sys.argv[1] + "/plan.json", sys.argv[1] + "/runtime.json",
+                     caller={"launcher": "jupiter_flag_evals.sh", "flag_work": sys.argv[2]}))' "$launch" "$FLAG_WORK"
+    ln -sfn "$launch" "$root/launches/latest"
+    echo "plan launch $launch; next: $0 array $name   (or $0 worker $name --unit <id> in an allocation)"
+    ;;
+array)
+    name=${1:?usage: $0 array <name>}
+    launch=$(launch_of "$name")
+    n=$("$HOST_PY" -c 'import json, sys; print(len(json.load(open(sys.argv[1]))["units"]))' "$launch/plan.json")
+    [ "$n" -gt 0 ] || { echo "the plan has no units (every row is done)"; exit 0; }
+    render_setup
+    mkdir -p "$launch/logs"
+    cat > "$launch/array.sbatch" <<EOF
+#!/bin/bash
+#SBATCH --job-name=oellm-worker-$name
+#SBATCH --account=$ACCOUNT
+#SBATCH --partition=booster
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:4
+#SBATCH --cpus-per-task=288
+#SBATCH --threads-per-core=1
+#SBATCH --mem=400G
+#SBATCH --time=${TIME:-04:00:00}
+#SBATCH --array=0-$((n - 1))%${CONCURRENCY:-20}
+#SBATCH --output=$launch/logs/%x-%A-%a.out
+# one unit of $launch/plan.json per array task (oellm.runner.worker; the unit's index = the task id)
+LAUNCH=$launch exec bash $REPO/scripts/jupiter_flag_evals.sh worker $name --index \$SLURM_ARRAY_TASK_ID
+EOF
+    echo "sbatch $launch/array.sbatch   # $n unit(s)"
+    ;;
+worker)
+    name=${1:?usage: $0 worker <name> --unit <id> | --index <i> | --all}; shift
+    launch=$(launch_of "$name")
+    PYTHONPATH="$REPO" exec "$HOST_PY" -m oellm.runner.worker --plan "$launch/plan.json" \
+        --runtime "$launch/runtime.json" "$@"
+    ;;
+collect)
+    name=${1:?usage: $0 collect <name>}
+    launch=$(launch_of "$name")
+    root=$WORKER_OUT/$name${LIMIT:+_limit$LIMIT}
+    tool_py -m oellm.reports.collect --root "$root=$name" ${CHRF_PATCHED:+--chrf-patched} -o "$root.tasks.csv"
+    tool_py -m oellm.reports.check --csv "$root.tasks.csv" --plan "$launch/plan.json" -o "$root.missing.csv"
     ;;
 check)
     # Where the oellm package in use comes from (callers verify it is this checkout).
