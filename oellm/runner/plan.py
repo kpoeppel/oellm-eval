@@ -260,9 +260,10 @@ def build_plan(*, model_name: str, model_dir: str, view_dir: str | None, out: st
         # a test run (limit) evaluates the first documents of each row: no parts
         items = split_items([r.name for r in lm_rows], engine_times or {}, 0 if limit else lm_eval.split_s,
                             lm_eval.max_parts)
-        per = sum(s for _, s in items) / max(1, lm_eval.workers)
+        workers = min(lm_eval.workers, len(items))  # no more sessions than items
+        per = sum(s for _, s in items) / workers
         units += [Unit(id=f"lm{i}{sfx}", kind="lm_eval_session", engine=lm_eval.engine, env=dict(lm_eval.env),
-                       est_s=LOAD_S + per) for i in range(lm_eval.workers)]
+                       est_s=LOAD_S + per) for i in range(workers)]
     for harness, short, cfg in (("lighteval", "le", lighteval), ("evalchemy", "ec", evalchemy)):
         h_rows = [r for r in todo if r.harness == harness and (cfg is None or r.task not in cfg.exclude_tasks)]
         if cfg is None or not h_rows:

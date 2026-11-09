@@ -79,6 +79,8 @@ def test_settings_are_checked(tmp_path):
         _plan(tmp_path, evalchemy=GroupSettings(backend="accelerate"))
     plan = _plan(tmp_path, lm_eval=None, evalchemy=None)
     assert [u.kind for u in plan.units] == ["lighteval"] and plan.lm_items == []
+    few = _plan(tmp_path, lm_eval=SessionSettings(workers=50, split_s=0))
+    assert sum(u.kind == "lm_eval_session" for u in few.units) == 2, "no more sessions than items"
 
 
 def test_group_key_matches_the_old_runners():
