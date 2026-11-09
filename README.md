@@ -254,6 +254,14 @@ The `--check` flag outputs a `results_missing.csv` that can be used to re-schedu
 oellm-eval schedule --eval_csv_path results_missing.csv
 ```
 
+## Node-Local Runner (plans and workers)
+
+When nodes come from elsewhere (an oellm-autoexp pool job, a Slurm array of your own, a workstation),
+`python -m oellm.runner.cli plan ...` writes a plan of a model's rows and `python -m oellm.runner.worker
+--plan plan.json --runtime runtime.json --unit <id>` runs one unit of it on the current allocation,
+with done markers and a provenance record per run; `python -m oellm.reports.collect` / `check` turn the
+results into summarize-evals' CSV and a missing-row list. See [docs/node-local-runner.md](docs/node-local-runner.md).
+
 ## CSV-Based Scheduling
 
 For full control, provide a CSV file with columns: `model_path`, `task_path`, `n_shot`, and optionally `eval_suite`:
