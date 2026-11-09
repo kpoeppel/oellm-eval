@@ -116,6 +116,10 @@ def main(argv=None):
         if not todo:
             return
 
+    if os.environ.get("OELLM_GEN_CACHE"):
+        from oellm.runner import gen_cache
+
+        gen_cache.install()  # finished generations survive a kill (gen_cache.py)
     from lm_eval import simple_evaluate
     from lm_eval.loggers import EvaluationTracker
     from lm_eval.models.vllm_causallms import VLLM

@@ -15,6 +15,7 @@ finds, and with one it drops the tasks' stop sequences (vllm backend).
 from __future__ import annotations
 
 import inspect
+import os
 import sys
 
 USAGE = ("usage: python -m oellm.runner.lighteval_cli vllm|accelerate <model_args> <tasks> "
@@ -62,6 +63,10 @@ def parse(args: list[str]) -> tuple[str, str, str, dict]:
 
 def main(argv: list[str] | None = None) -> int:
     backend, model_args, tasks, opts = parse(sys.argv[1:] if argv is None else argv)
+    if backend == "vllm" and os.environ.get("OELLM_GEN_CACHE"):
+        from oellm.runner import gen_cache
+
+        gen_cache.install()  # finished generations survive a kill (gen_cache.py)
     if backend == "vllm":
         from lighteval.main_vllm import vllm as command
     else:

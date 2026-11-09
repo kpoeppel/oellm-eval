@@ -20,6 +20,7 @@ are left without a result (0 with --missing-ok) or a session failed, 2 for a bad
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import signal
@@ -223,6 +224,10 @@ def run_unit(plan: Plan, runtime: Runtime, unit: Unit, *, plan_path: str = "", r
                 d, m = mark_done(plan, cmd)
                 done += d
                 missing += m
+                cache = cmd.env.get("OELLM_GEN_CACHE")
+                if cache and not m:  # every row has its result: the call's generations are not needed again
+                    for f in glob.glob(glob.escape(cache) + ".*"):
+                        os.unlink(f)
                 record["commands"].append({"argv": argv, "rc": code, "hung": hung, "seconds": round(time.time() - t0, 1),
                                            "rows_done": [r.name for r in d], "rows_missing": [r.name for r in m]})
                 if code:

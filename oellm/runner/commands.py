@@ -41,7 +41,8 @@ def lm_eval_session(plan: Plan, unit: Unit, shard: int) -> Command:
         argv.append("--response-cache")
     if plan.limit:
         argv += ["--limit", f"{plan.limit:g}"]
-    return Command(argv, "lm-eval-harness", env=dict(unit.env))
+    env = {**unit.env, "OELLM_GEN_CACHE": str(plan.layout.gen_cache(f"lm_{unit.id}_s{shard}"))}
+    return Command(argv, "lm-eval-harness", env=env)
 
 
 def lighteval(plan: Plan, unit: Unit, rows: list[Row]) -> Command:
@@ -61,6 +62,8 @@ def lighteval(plan: Plan, unit: Unit, rows: list[Row]) -> Command:
             model_args += f"max_model_length={g.max_model_length},"
         model_args += f"tensor_parallel_size={g.tp}"
         env = {**unit.env, "OELLM_EP": "1" if g.expert_parallel else "0"}  # read by the patched lighteval
+    if unit.backend == "vllm":
+        env["OELLM_GEN_CACHE"] = str(plan.layout.gen_cache(plan.layout.lighteval_out(rows).name))
     argv = ["python", "-m", "oellm.runner.lighteval_cli", unit.backend, model_args, tasks,
             "--load-tasks-multilingual", "--output-dir", str(plan.layout.lighteval_out(rows)), "--save-details"]
     if plan.limit:
@@ -81,11 +84,14 @@ def evalchemy(plan: Plan, unit: Unit, row: Row) -> Command:
         model_args += ",enable_expert_parallel=True"
     if g.max_model_length is not None:
         model_args += f",max_model_len={g.max_model_length}"
-    argv = ["python", "-m", "eval.eval", "--model", "vllm", "--tasks", row.task, "--model_args", model_args,
-            "--batch_size", "auto", "--output_path", str(plan.layout.evalchemy_out(row))]
+    out = plan.layout.evalchemy_out(row)
+    # through the generation cache: a rerun after a kill keeps every finished generation
+    argv = ["python", "-m", "oellm.runner.gen_cache", "eval.eval", "--model", "vllm", "--tasks", row.task,
+            "--model_args", model_args, "--batch_size", "auto", "--output_path", str(out)]
     if plan.limit:
         argv += ["--limit", f"{plan.limit:g}"]
-    return Command(argv, "evalchemy", env=dict(unit.env), cwd="evalchemy", rows=[row])
+    env = {**unit.env, "OELLM_GEN_CACHE": str(plan.layout.gen_cache(out.name))}
+    return Command(argv, "evalchemy", env=env, cwd="evalchemy", rows=[row])
 
 
 def unit_commands(plan: Plan, unit: Unit, rows: list[Row], shard: int = 0) -> list[Command]:

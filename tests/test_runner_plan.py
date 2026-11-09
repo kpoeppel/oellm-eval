@@ -120,7 +120,8 @@ def test_evalchemy_one_call_per_task_on_the_view(tmp_path):
     ma = cs[0].argv[cs[0].argv.index("--model_args") + 1]
     assert ma.startswith(f"pretrained={plan.view_dir},") and "enforce_eager=False" in ma
     assert ma.endswith(",enable_expert_parallel=True,max_model_len=40960")
-    assert cs[0].cwd == "evalchemy" and cs[0].env == {"OELLM_VLLM_ENFORCE_EAGER": "0"}
+    assert cs[0].cwd == "evalchemy" and cs[0].env["OELLM_VLLM_ENFORCE_EAGER"] == "0"
+    assert cs[0].env["OELLM_GEN_CACHE"].endswith("/gen_cache/evalchemy_AIME24_0.jsonl")
 
 
 def test_lm_eval_session_command(tmp_path):

@@ -85,6 +85,10 @@ class Layout:
     def evalchemy_out(self, row: Row) -> Path:
         return self.root / "evalchemy" / f"evalchemy_{key_of(row.task)}_{row.n_shot}"
 
+    def gen_cache(self, name: str) -> Path:
+        """A harness call's generation cache (gen_cache.py): <root>/gen_cache/<name>.jsonl[.<pid>]."""
+        return self.root / "gen_cache" / f"{name}.jsonl"
+
     @property
     def queue_dir(self) -> Path:
         return self.root / "queue_lm"
