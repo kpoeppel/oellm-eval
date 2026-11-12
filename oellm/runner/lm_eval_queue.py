@@ -120,6 +120,15 @@ def main(argv=None):
         from oellm.runner import gen_cache
 
         gen_cache.install()  # finished generations survive a kill (gen_cache.py)
+    # HF evaluate's metric cache (squad_v2) holds a lock file per experiment in HF_HOME/metrics: the dp ranks and
+    # workers sharing one HF_HOME collide ("another evaluation module instance is already using the local cache
+    # file") and the other ranks hang at the next barrier (2026-11-12). One node-local cache per process.
+    metrics_cache = os.path.join(os.environ.get("TMPDIR") or "/tmp", f"oellm_hf_metrics_{os.getpid()}")
+    os.environ["HF_METRICS_CACHE"] = metrics_cache
+    if "evaluate" in sys.modules:  # imported already: its config read the shared default
+        import evaluate.config
+
+        evaluate.config.HF_METRICS_CACHE = metrics_cache
     from lm_eval import simple_evaluate
     from lm_eval.loggers import EvaluationTracker
     from lm_eval.models.vllm_causallms import VLLM
