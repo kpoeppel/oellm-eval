@@ -41,8 +41,84 @@ def launch(size, argv):
     if any(p.exitcode for p in processes):raise RuntimeError('EP frontend failed')
 
 
+def dp_all(flag: bool) -> bool:
+    """True on every rank iff ``flag`` is on every rank of the node-local EP frontends (``flag`` itself
+    outside them). The frontends drive vLLM's offline DP engines, which have no DP coordinator: an
+    engine with requests steps in lockstep with its peers, and a peer whose frontend sends nothing
+    stays paused, so the busy one hangs in its DP all-reduce (30 min gloo timeout). Every rank must
+    therefore call the engine whenever one does; lm-eval pads the ranks to equal request counts, and
+    the caches decide with this collective instead of per rank."""
+    if "OELLM_DP_RANK" not in os.environ:
+        return flag
+    import torch
+    import torch.distributed as dist
+
+    if not dist.is_initialized() or dist.get_world_size() == 1:
+        return flag
+    t = torch.tensor([1 if flag else 0], dtype=torch.int32)
+    dist.all_reduce(t, op=dist.ReduceOp.MIN)
+    return bool(t.item())
+
+
+class _CacheMiss:
+    """lm-eval's response cache seen as empty for one call; new results are still stored."""
+
+    def __init__(self, real):
+        self.real = real
+
+    def __contains__(self, key):
+        return False
+
+    def __setitem__(self, key, value):
+        self.real[key] = value
+
+    def commit(self):
+        self.real.commit()
+
+
+def consistent_response_cache():
+    """lm-eval's CachingLM per DP rank skipped the model for cached requests: a rank with every
+    request cached made no engine call, a partly cached one fewer calls than its peers, and the
+    engines hung (belebele_hun_Latn retried after a crash, MN5 2026-11-13). Now a request method
+    reads the cache only when every rank has all of its requests cached, else every rank
+    evaluates all of its requests (equal counts, as lm-eval padded them) and refreshes the cache."""
+    from lm_eval.api import model as lm_model
+
+    if getattr(lm_model.CachingLM, "_oellm_dp_consistent", False):
+        return
+    original = lm_model.CachingLM.__getattr__
+
+    def __getattr__(self, attr):
+        fn = original(self, attr)
+        if attr not in ("loglikelihood", "loglikelihood_rolling", "generate_until"):
+            return fn
+
+        def _fn(requests):
+            cached = all(
+                not (attr == "generate_until" and r.args[1].get("do_sample", False))
+                and lm_model.hash_args(attr, r.args) in self.dbdict for r in requests)
+            if dp_all(cached):
+                return fn(requests)
+            real = self.dbdict
+            self.dbdict = _CacheMiss(real)
+            try:
+                return fn(requests)
+            finally:
+                self.dbdict = real
+
+        return _fn
+
+    lm_model.CachingLM.__getattr__ = __getattr__
+    lm_model.CachingLM._oellm_dp_consistent = True
+
+
 def distributed_adapter(base):
     class NodeEPVLLM(base):
+        def loglikelihood_rolling(self, requests, disable_tqdm=False):
+            # the ranks' documents give different window counts, hence different numbers of engine
+            # calls: the offline DP engines would hang (dp_all); run such rows with --dp 1
+            raise NotImplementedError("loglikelihood_rolling under node-local DP: use --dp 1")
+
         def all_gather(self, tensor):
             import torch
             import torch.distributed as dist

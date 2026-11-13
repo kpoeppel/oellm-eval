@@ -40,7 +40,17 @@ the staged harnesses on `pythonpath`). `apptainer` starts one image per harness 
 command, binds the model, the results root, this checkout and `binds` (e.g. the patched HumanEval
 grader) at their own paths, and passes the environment explicitly. This checkout is always first on
 `PYTHONPATH`. `cleanup_globs`, `prune`, `hash_files` and `hang_minutes` cover node-local leftovers,
-version clashes, provenance of patched files and the post-shutdown vLLM hang.
+version clashes, provenance of patched files and the post-shutdown vLLM hang. `require` pins
+package versions per harness (`--require lm-eval-harness:lm_eval=0.4.12`): the worker probes them
+first and runs no command of a unit whose runtime differs (exit 3, recorded as `version_mismatch`).
+
+An `lm_eval_session` with `dp > 1` runs one vLLM frontend per GPU (node_ep.py) on vLLM's offline
+data parallelism, which has no DP coordinator: whenever one rank calls the engine, every rank must,
+or the busy engine waits in its DP all-reduce until the 30-minute gloo timeout. lm-eval pads the
+ranks to equal request counts; the response cache and the generation cache therefore reuse results
+only when every rank has all of a call's requests cached (`node_ep.dp_all`), else every rank
+evaluates all of its requests. Rolling log-likelihood rows (different window counts per rank) need
+`dp 1`.
 
 The runner imports only the standard library: a worker runs on a bare host `python3`.
 

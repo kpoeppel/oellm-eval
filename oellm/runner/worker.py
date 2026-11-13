@@ -179,8 +179,17 @@ def run_unit(plan: Plan, runtime: Runtime, unit: Unit, *, plan_path: str = "", r
               "protocol": plan.protocol, "limit": plan.limit, "start_utc": provenance.now(),
               "code": provenance.code_identity(), "machine": provenance.machine(),
               "hash_files": {f: provenance.sha256(f) for f in runtime.hash_files}, "commands": []}
-    if probe:
+    if probe or runtime.require:
         record["harnesses"] = {h: provenance.probe_versions(runtime, h) for h in dict.fromkeys(c.harness for c in cmds)}
+        bad = provenance.version_mismatches(runtime.require, record["harnesses"])
+        if bad:
+            # a different harness version changes prompts or metrics: no row of this unit runs
+            print(f"[worker] {unit.id}: runtime differs from the pinned versions: " + "; ".join(bad), flush=True)
+            record.update(end_utc=provenance.now(), rows={"done": [], "missing": [r.name for r in rows]}, rc=3,
+                          version_mismatch=bad)
+            path = provenance.write_record(layout.provenance_dir, unit.id, record)
+            print(f"[worker] {unit.id}: rc 3, provenance {path}", flush=True)
+            return 3
     tmp = runtime.open_tmp()
     if tmp:
         print(f"[worker] {unit.id}: private /tmp {tmp}", flush=True)

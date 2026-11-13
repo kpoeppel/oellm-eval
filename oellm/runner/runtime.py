@@ -43,6 +43,9 @@ class Runtime:
     cleanup_globs: list[str] = field(default_factory=list)  # node-local leftovers, before and after a unit
     prune: dict[str, list[str]] = field(default_factory=dict)  # removed before a harness's first command
     hash_files: list[str] = field(default_factory=list)  # provenance: sha256 of these (patched harness files)
+    # pinned package versions per harness, e.g. {"lm-eval-harness": {"lm_eval": "0.4.13"}}: the worker
+    # probes them (provenance.probe_versions) and runs no command of a unit whose runtime differs
+    require: dict[str, dict[str, str]] = field(default_factory=dict)
     hang_minutes: float = 15.0          # end a command this long silent after vLLM's shutdown (0: never)
     # apptainer with --contain/--containall: a private directory per unit run under this root is the
     # image's /tmp, /var/tmp and home (a contained /tmp is a tiny tmpfs, 16 MiB on JUPITER)

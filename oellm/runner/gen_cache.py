@@ -87,6 +87,15 @@ class Cache:
         self._fh = None
         self.added = 0
 
+    def has_all(self, keys: list) -> bool:
+        """Every key has a stored generation (repeats of a key need as many)."""
+        need: dict[str, int] = {}
+        for k in keys:
+            if k is None:
+                return False
+            need[k] = need.get(k, 0) + 1
+        return all(len(self.stored.get(k, ())) >= n for k, n in need.items())
+
     def take(self, key: str) -> dict | None:
         lst = self.stored.get(key)
         return lst.pop(0) if lst else None
@@ -137,8 +146,15 @@ def _wrap(original):
         keys = [key_of(p, sp) for p, sp in zip(plist, sps)]
         results: list = [None] * len(plist)
         todo = []
+        # node-local EP frontends: reuse only when every rank's call is fully cached, else every rank
+        # generates all of its prompts -- a rank skipping the engine hangs its peers (node_ep.dp_all)
+        use = True
+        if os.environ.get("OELLM_DP_RANK") is not None:
+            from oellm.runner.node_ep import dp_all
+
+            use = dp_all(cache.has_all(keys))
         for i, k in enumerate(keys):
-            rec = cache.take(k) if k else None
+            rec = cache.take(k) if k and use else None
             if rec is not None:
                 results[i] = _restore(rec, plist[i])
             else:

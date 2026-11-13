@@ -71,7 +71,8 @@ def machine() -> dict:
 
 def probe_versions(runtime: Runtime, harness: str) -> dict:
     """Package versions as the harness's runtime sees them (one short command)."""
-    argv, env, cwd = runtime.wrap(["python", "-c", PROBE, *DISTS], harness, {}, None, [])
+    dists = list(dict.fromkeys([*DISTS, *runtime.require.get(harness, {})]))  # and the runtime's pins
+    argv, env, cwd = runtime.wrap(["python", "-c", PROBE, *dists], harness, {}, None, [])
     try:
         r = subprocess.run(argv, env=env, cwd=cwd, capture_output=True, text=True, timeout=600)
     except (OSError, subprocess.SubprocessError) as e:
@@ -80,6 +81,22 @@ def probe_versions(runtime: Runtime, harness: str) -> dict:
         if line.startswith("OELLM_PROBE "):
             return json.loads(line[len("OELLM_PROBE "):])
     return {"error": f"exit {r.returncode}: {r.stderr.strip()[-400:]}"}
+
+
+def version_mismatches(required: dict[str, dict[str, str]], found: dict[str, dict]) -> list[str]:
+    """``harness: dist found X, required Y`` for every pinned version the probe did not see."""
+    out = []
+    for harness, pins in required.items():
+        if harness not in found:
+            continue  # the unit does not run this harness
+        got = found[harness]
+        for dist, want in pins.items():
+            have = got.get(dist) if isinstance(got, dict) else None
+            if have != want:
+                out.append(f"{harness}: {dist} {have or 'missing'}"
+                           + (f" ({got['error']})" if isinstance(got, dict) and "error" in got else "")
+                           + f", required {want}")
+    return out
 
 
 def now() -> str:

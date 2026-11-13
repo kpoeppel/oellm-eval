@@ -105,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--job-tmp-root", default="")
     r.add_argument("--hang-minutes", type=float, default=15.0)
     r.add_argument("--hash-file", action="append", default=[])
+    r.add_argument("--require", action="append", default=[], metavar="HARNESS:DIST=VERSION",
+                   help="pinned package version (the worker runs nothing on a runtime that differs)")
     r.add_argument("-o", "--output", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "runtime":
@@ -118,10 +120,15 @@ def main(argv: list[str] | None = None) -> int:
             h, rest = i.split(":", 1)
             k, v = rest.split("=", 1)
             he.setdefault(h, {})[k] = v
+        req: dict[str, dict[str, str]] = {}
+        for i in a.require:
+            h, rest = i.split(":", 1)
+            d, v = rest.split("=", 1)
+            req.setdefault(h, {})[d] = v
         rt = Runtime(kind=a.kind, python=a.python, name=a.name, images=kv(a.image), apptainer_args=shlex.split(a.args),
                      binds=a.bind, harness_binds=hb, env=kv(a.env), harness_env=he, pythonpath=a.pythonpath,
                      dirs=kv(a.dir), gpus=a.gpus, job_tmp_root=a.job_tmp_root, hang_minutes=a.hang_minutes,
-                     hash_files=a.hash_file)
+                     hash_files=a.hash_file, require=req)
         rt.check()
         rt.write(a.output)
         print(f"{a.output}: {a.kind} runtime" + (f", images {sorted(rt.images)}" if rt.images else ""))

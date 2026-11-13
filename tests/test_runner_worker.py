@@ -4,6 +4,7 @@ path with a stand-in command."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -133,6 +134,20 @@ def test_the_hang_watchdog_ends_a_command_silent_after_shutdown(tmp_path, fakes)
     rec = json.loads(next(plan.layout.provenance_dir.glob("le1__*.json")).read_text())
     assert rec["commands"][0]["hung"] is True and rec["commands"][0]["rc"] == 124
     assert plan.layout.is_done(ROWS[0]), "results written before the hang still count"
+
+
+def test_a_pinned_version_mismatch_runs_nothing(tmp_path, fakes):
+    rt, _ = fakes
+    plan, path = _plan(tmp_path)
+    bad = dataclasses.replace(rt, require={"lighteval": {"pytest": "0.0.1"}, "lm-eval-harness": {"lm_eval": "9"}})
+    r = _worker(path, bad.write(tmp_path / "runtime_pinned.json"), "--unit", "le1", "--no-probe", "--missing-ok")
+    assert r.returncode == 3 and "lighteval: pytest" in r.stdout and "required 0.0.1" in r.stdout
+    assert not any(plan.layout.is_done(row) for row in ROWS[:2])
+    rec = json.loads(next(plan.layout.provenance_dir.glob("le1__*.json")).read_text())
+    assert rec["rc"] == 3 and rec["commands"] == [] and len(rec["version_mismatch"]) == 1  # lm-eval: not in le1
+    import pytest as pt
+    ok = dataclasses.replace(rt, require={"lighteval": {"pytest": pt.__version__}})
+    assert _worker(path, ok.write(tmp_path / "runtime_ok.json"), "--unit", "le1", "--no-probe").returncode == 0
 
 
 def test_print_and_bad_selections(tmp_path, fakes):

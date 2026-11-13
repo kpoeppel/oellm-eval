@@ -136,9 +136,10 @@ def main(argv=None):
     from lm_eval.tasks import TaskManager
 
     if a.dp > 1:
-        from oellm.runner.node_ep import distributed_adapter
+        from oellm.runner.node_ep import consistent_response_cache, distributed_adapter
 
         VLLM = distributed_adapter(VLLM)
+        consistent_response_cache()  # every rank calls the engine whenever one does (node_ep.dp_all)
     t0 = time.time()
     # The OELLM custom decode graphs are controlled by OELLM_DECODE_GRAPHS; this
     # vLLM engine flag stays opt-in because vLLM's own graph capture is separate.

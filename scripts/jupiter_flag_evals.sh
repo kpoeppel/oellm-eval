@@ -16,7 +16,7 @@
 #   scripts/jupiter_flag_evals.sh array   <name>              # an sbatch array, task i = unit i; prints sbatch
 #   scripts/jupiter_flag_evals.sh worker  <name> --unit <id> | --index <i> | --all [--print]  # in this allocation
 #   scripts/jupiter_flag_evals.sh collect <name>              # <name>.tasks.csv + <name>.missing.csv
-# plan: NAMES (comma-separated row names), HARNESSES, LIMIT; LM_WORKERS (8), LM_TP (1), LM_REPLICAS
+# plan: NAMES (comma-separated row names), HARNESSES, LIMIT, OELLM_LM_EVAL_VERSION (the image's pinned lm-eval, 0.4.12); LM_WORKERS (8), LM_TP (1), LM_REPLICAS
 # (4 / LM_TP), LE_GROUPS (8), LE_BACKEND (accelerate: the HF backend these results always used), LE_TP
 # (4: the model over the node's GPUs; 1: one GPU, for small models),
 # EC_GROUPS (4), EC_DP (4); SETTINGS=<json> replaces all of them. Results: $FLAG_WORK/worker/<name>.
@@ -343,7 +343,8 @@ EOF
         --env "HF_HOME=$HF_HOME" --env "HF_DATASETS_CACHE=$HF_DATASETS_CACHE" --env HF_HUB_OFFLINE=1 \
         --env TRANSFORMERS_OFFLINE=1 --env "NLTK_DATA=$NLTK_DATA" --env VLLM_WORKER_MULTIPROC_METHOD=spawn \
         --env 'HF_METRICS_CACHE='"$HF_HOME"'/metrics/job_${SLURM_JOB_ID}' \
-        --dir evalchemy=/opt/evalchemy --job-tmp-root "${OELLM_EVAL_TMP_ROOT:-/tmp}" -o "$launch/runtime.json"
+        --dir evalchemy=/opt/evalchemy --job-tmp-root "${OELLM_EVAL_TMP_ROOT:-/tmp}" \
+        --require "lm-eval-harness:lm_eval=${OELLM_LM_EVAL_VERSION:-0.4.12}" -o "$launch/runtime.json"
     tool_py -c 'import sys; from oellm.reports.manifest import write_manifest
 print(write_manifest(sys.argv[1], sys.argv[1] + "/plan.json", sys.argv[1] + "/runtime.json",
                      caller={"launcher": "jupiter_flag_evals.sh", "flag_work": sys.argv[2]}))' "$launch" "$FLAG_WORK"
