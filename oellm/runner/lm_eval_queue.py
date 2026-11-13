@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 import os
+import socket
 import sys
 import time
 import traceback
@@ -205,7 +206,9 @@ def main(argv=None):
             (cache_dir / "identity.json").write_text(json.dumps(identity, indent=2) + "\n")
         if a.dp > 1:
             lm.barrier()
-        cache_prefix = str(cache_dir / f"shard{a.shard}")
+        # queue workers all run as shard 0: one sqlite file per engine (one engine per node), else concurrent
+        # writers on GPFS fail with "sqlite3.OperationalError: database is locked" and the worker hangs (2026-11-13)
+        cache_prefix = str(cache_dir / (f"node_{socket.gethostname()}" if a.queue else f"shard{a.shard}"))
     failed = []
 
     def run_row(t) -> bool:
