@@ -30,6 +30,22 @@ from oellm.runner.layout import Row
 
 INCLUDE_PATH = Path(__file__).resolve().parents[1] / "resources" / "custom_lm_eval_tasks"
 
+# RULER at one context length per row: task "<ruler task>__L<length>" (e.g. niah_single_2__L65536). lm-eval's
+# RULER tasks build their documents from task metadata -- the length grid (max_seq_lengths) and the tokenizer
+# (resolved from `pretrained`) -- which reaches a task only through a TaskManager that simple_evaluate creates
+# itself (task_manager=None). One length per row keeps the rows independent and lets `limit` subsample: a
+# task's documents are concatenated length by length, so a limit over a multi-length grid would keep the
+# shortest length only. Needle depths are drawn at random per document, so the first N are representative.
+RULER_SUFFIX = "__L"
+
+
+def ruler_row(task: str) -> tuple[str, int] | None:
+    """(lm-eval task, context length) of a RULER length row, None for any other task."""
+    base, sep, length = task.rpartition(RULER_SUFFIX)
+    if not sep or not base or not length.isdigit():
+        return None
+    return base, int(length)
+
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -81,6 +97,8 @@ def main(argv=None):
             raise ValueError(f"{name}: not a row name <half>/<task>/<n_shot>") from None
         if k is not None and a.limit:
             raise ValueError(f"{name}: parts and --limit exclude each other (lm-eval samples vs limit)")
+        if k is not None and ruler_row(task):
+            raise ValueError(f"{name}: a RULER length row cannot be split into parts (launch with split_s 0)")
         return {"name": name, "task": task, "n_shot": n_shot, "part": None if k is None else (k, n)}
 
     try:
@@ -231,11 +249,17 @@ def main(argv=None):
             real_rank = lm._rank if a.dp > 1 else 0
             if unshard:
                 lm._rank, lm._world_size = 0, 1
+            ruler = ruler_row(t["task"])
+            if ruler:  # the task's own manager (metadata), a per-row document limit (OELLM_RULER_LIMIT)
+                eval_task, eval_tm, limit = ruler[0], None, a.limit or int(os.environ.get("OELLM_RULER_LIMIT", "100"))
+                meta = {"max_seq_lengths": [ruler[1]], "pretrained": str(export), "tokenizer": str(export)}
+            else:
+                eval_task, eval_tm, limit, meta = t["task"], tm, a.limit, None
             try:
-                res = simple_evaluate(model=lm, tasks=[t["task"]], num_fewshot=t["n_shot"],
+                res = simple_evaluate(model=lm, tasks=[eval_task], num_fewshot=t["n_shot"],
                                       batch_size=a.request_batch_size, log_samples=True,
-                                      evaluation_tracker=tracker, task_manager=tm, confirm_run_unsafe_code=True,
-                                      limit=a.limit, use_cache=None if unshard else cache_prefix)
+                                      evaluation_tracker=tracker, task_manager=eval_tm, confirm_run_unsafe_code=True,
+                                      limit=limit, use_cache=None if unshard else cache_prefix, metadata=meta)
             finally:
                 if unshard:
                     lm._rank, lm._world_size = real_rank, a.dp
@@ -255,7 +279,7 @@ def main(argv=None):
                                                        "limit": a.limit, "response_cache": cache_prefix,
                                                        "results": res["results"]}) + "\n")
             print(f"[lm_eval_queue] {t['name']} done in {time.time() - t1:.0f} s: "
-                  f"{json.dumps(res['results'].get(t['task'], {}), default=str)[:400]}", flush=True)
+                  f"{json.dumps(res['results'].get(eval_task, {}), default=str)[:400]}", flush=True)
             if a.dp > 1:
                 lm.barrier()
             return True
