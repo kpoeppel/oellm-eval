@@ -215,7 +215,7 @@ def main(argv=None):
                          "OELLM_ENGRAM_DECODE_IMPL", "OELLM_FUSION_IMPL", "OELLM_DECODE_GRAPHS",
                          "OELLM_GRAPH_MAX_ROWS",
                          "OELLM_LOCAL_EXPERT_LOAD", "OELLM_ENGRAM_MODEL_DIR", "OELLM_DECODE_KERNELS",
-                         "OELLM_DECODE_KERNELS_OFF", "OELLM_MOE_FP8", "OELLM_VLLM_CUDAGRAPH",
+                         "OELLM_DECODE_KERNELS_OFF", "OELLM_MOE_FP8", "OELLM_MOE_FP8_DIRECT", "OELLM_VLLM_CUDAGRAPH",
                          "OELLM_VLLM_ENFORCE_EAGER"]},
         }
         digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
