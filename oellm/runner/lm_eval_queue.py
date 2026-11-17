@@ -209,14 +209,17 @@ def main(argv=None):
                                  source / "model_executor/layers/oellm_uva_table.py",
                                  source / "model_executor/layers/oellm_decode_kernels.py",
                                  source / "model_executor/layers/fused_moe/fused_moe.py",
-                                 source / "model_executor/layers/fused_moe/activation.py"] if f.exists()},
+                                 source / "model_executor/layers/fused_moe/activation.py",
+                                 source / "model_executor/layers/fused_moe/configs/E=90,N=768,device_name=NVIDIA_H100.json"] if f.exists()},
             "settings": {k: os.environ.get(k) for k in ["OELLM_MOE", "OELLM_MHC_IMPL",
                          "OELLM_ENGRAM_TABLES", "OELLM_ENGRAM_LOOKUP", "OELLM_ENGRAM_MADVISE",
                          "OELLM_ENGRAM_DECODE_IMPL", "OELLM_FUSION_IMPL", "OELLM_DECODE_GRAPHS",
                          "OELLM_GRAPH_MAX_ROWS",
                          "OELLM_LOCAL_EXPERT_LOAD", "OELLM_ENGRAM_MODEL_DIR", "OELLM_DECODE_KERNELS",
-                         "OELLM_DECODE_KERNELS_OFF", "OELLM_MOE_FP8", "OELLM_MOE_FP8_DIRECT", "OELLM_VLLM_CUDAGRAPH",
-                         "OELLM_VLLM_ENFORCE_EAGER"]},
+                         "OELLM_DECODE_KERNELS_OFF", "OELLM_CKDA_SPLIT", "OELLM_MHC_WRITE4",
+                         "OELLM_MHC_READ_WARPS", "OELLM_ENGRAM_HASH_PREFILL",
+                         "OELLM_MOE_FP8", "OELLM_MOE_FP8_DIRECT", "OELLM_VLLM_CUDAGRAPH",
+                         "OELLM_VLLM_ENFORCE_EAGER", "VLLM_MAX_STOP_STRINGS"]},
         }
         digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
         cache_dir = out / "response_cache" / digest
