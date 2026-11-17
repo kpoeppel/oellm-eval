@@ -16,3 +16,7 @@
 **/task_map_cache.json
 *.sif
 results/
+
+# coverage reports
+**/.coverage
+**/.coverage.*
